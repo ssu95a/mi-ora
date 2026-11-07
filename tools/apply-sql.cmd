@@ -122,8 +122,11 @@ rem command line. ECHO is disabled for CONNECT so the password is not printed.
    echo SET LINESIZE 250
    echo SET PAGESIZE 100
    echo.
-   echo COLUMN MI_RUN_STARTED NEW_VALUE MI_RUN_STARTED NOPRINT
-   echo SELECT TO_CHAR^(SYSDATE, 'YYYYMMDDHH24MISS'^) MI_RUN_STARTED FROM dual;
+   echo VARIABLE MI_RUN_STARTED VARCHAR2^(14^)
+   echo BEGIN
+   echo    :MI_RUN_STARTED := TO_CHAR^(SYSDATE, 'YYYYMMDDHH24MISS'^);
+   echo END;
+   echo /
    echo.
    echo PROMPT ============================================================
    echo PROMPT Applying SQL file:
@@ -143,7 +146,7 @@ rem command line. ECHO is disabled for CONNECT so the password is not printed.
    echo      INTO l_count
    echo      FROM USER_OBJECTS o
    echo     WHERE o.status = 'INVALID'
-   echo       AND o.last_ddl_time ^>= TO_DATE^('&&MI_RUN_STARTED', 'YYYYMMDDHH24MISS'^)
+   echo       AND o.last_ddl_time ^>= TO_DATE^(:MI_RUN_STARTED, 'YYYYMMDDHH24MISS'^)
    echo       AND EXISTS ^(
    echo              SELECT 1
    echo                FROM USER_ERRORS e
@@ -156,7 +159,7 @@ rem command line. ECHO is disabled for CONNECT so the password is not printed.
    echo          SELECT o.object_name, o.object_type
    echo            FROM USER_OBJECTS o
    echo           WHERE o.status = 'INVALID'
-   echo             AND o.last_ddl_time ^>= TO_DATE^('&&MI_RUN_STARTED', 'YYYYMMDDHH24MISS'^)
+   echo             AND o.last_ddl_time ^>= TO_DATE^(:MI_RUN_STARTED, 'YYYYMMDDHH24MISS'^)
    echo             AND EXISTS ^(
    echo                    SELECT 1
    echo                      FROM USER_ERRORS e
