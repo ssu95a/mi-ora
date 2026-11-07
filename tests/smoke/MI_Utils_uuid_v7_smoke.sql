@@ -86,11 +86,12 @@ DECLARE
       l_now_utc TIMESTAMP(6);
       l_delta   INTERVAL DAY(9) TO SECOND(6);
    BEGIN
-      l_now_utc :=
-         CAST(
-            SYS_EXTRACT_UTC(SYSTIMESTAMP)
-            AS TIMESTAMP
-         );
+      SELECT CAST(
+                SYS_EXTRACT_UTC(SYSTIMESTAMP)
+                AS TIMESTAMP
+             )
+        INTO l_now_utc
+        FROM dual;
 
       l_delta :=
          l_now_utc
