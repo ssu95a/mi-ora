@@ -372,11 +372,16 @@ IS
 
          SYS_EXTRACT_UTC исключает зависимость от SESSIONTIMEZONE.
       */
-      l_now_utc :=
-         CAST(
-            SYS_EXTRACT_UTC(SYSTIMESTAMP)
-            AS TIMESTAMP
-         );
+      /*
+         SYS_EXTRACT_UTC является SQL-функцией. На Oracle 12.1 вызываем её
+         в SQL-контексте, а не как прямое PL/SQL expression.
+      */
+      SELECT CAST(
+                SYS_EXTRACT_UTC(SYSTIMESTAMP)
+                AS TIMESTAMP
+             )
+        INTO l_now_utc
+        FROM dual;
 
       l_delta :=
          l_now_utc
