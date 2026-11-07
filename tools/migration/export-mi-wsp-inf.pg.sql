@@ -13,9 +13,13 @@
 
    Output is idempotent MERGE DML. No target rows are deleted.
 
-   Example:
+   Preferred launcher:
 
-      psql "host=... dbname=... user=..." -X -f tools/migration/export-mi-wsp-inf.pg.sql > mi-wsp-inf.oracle.sql
+      tools\migration\export-mi-wsp-inf.cmd
+
+   It writes:
+
+      <repo-root>\mi-wsp-inf.oracle.sql
 
    Then apply to Oracle:
 
