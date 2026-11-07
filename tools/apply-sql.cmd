@@ -122,6 +122,9 @@ rem command line. ECHO is disabled for CONNECT so the password is not printed.
    echo SET LINESIZE 250
    echo SET PAGESIZE 100
    echo.
+   echo COLUMN MI_RUN_STARTED NEW_VALUE MI_RUN_STARTED NOPRINT
+   echo SELECT TO_CHAR^(SYSDATE, 'YYYYMMDDHH24MISS'^) MI_RUN_STARTED FROM dual;
+   echo.
    echo PROMPT ============================================================
    echo PROMPT Applying SQL file:
    echo PROMPT %SQL_FILE%
@@ -132,6 +135,46 @@ rem command line. ECHO is disabled for CONNECT so the password is not printed.
    echo @"%SQL_FILE%"
    echo.
    echo SHOW ERRORS
+   echo.
+   echo DECLARE
+   echo    l_count PLS_INTEGER;
+   echo BEGIN
+   echo    SELECT COUNT^(*^)
+   echo      INTO l_count
+   echo      FROM USER_OBJECTS o
+   echo     WHERE o.status = 'INVALID'
+   echo       AND o.last_ddl_time ^>= TO_DATE^('&&MI_RUN_STARTED', 'YYYYMMDDHH24MISS'^)
+   echo       AND EXISTS ^(
+   echo              SELECT 1
+   echo                FROM USER_ERRORS e
+   echo               WHERE e.name = o.object_name
+   echo                 AND e.type = o.object_type
+   echo           ^);
+   echo.
+   echo    IF l_count ^> 0 THEN
+   echo       FOR r IN ^(
+   echo          SELECT o.object_name, o.object_type
+   echo            FROM USER_OBJECTS o
+   echo           WHERE o.status = 'INVALID'
+   echo             AND o.last_ddl_time ^>= TO_DATE^('&&MI_RUN_STARTED', 'YYYYMMDDHH24MISS'^)
+   echo             AND EXISTS ^(
+   echo                    SELECT 1
+   echo                      FROM USER_ERRORS e
+   echo                     WHERE e.name = o.object_name
+   echo                       AND e.type = o.object_type
+   echo                 ^)
+   echo           ORDER BY o.object_name, o.object_type
+   echo       ^) LOOP
+   echo          DBMS_OUTPUT.PUT_LINE^('INVALID: ' ^|^| r.object_name ^|^| ' [' ^|^| r.object_type ^|^| ']'^);
+   echo       END LOOP;
+   echo.
+   echo       RAISE_APPLICATION_ERROR^(
+   echo          -20001,
+   echo          'SQL file created or compiled INVALID objects: ' ^|^| l_count
+   echo       ^);
+   echo    END IF;
+   echo END;
+   echo /
    echo.
    echo PROMPT ============================================================
    echo PROMPT SQL file applied successfully
