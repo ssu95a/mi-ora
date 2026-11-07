@@ -153,12 +153,112 @@ AS
       p_details_text   IN CLOB     DEFAULT NULL
    );
 
+
+   ----------------------------------------------------------------------------
+   -- Синтаксический сахар.
+   --
+   -- Эти процедуры не имеют собственной логики записи и являются только
+   -- тонкими wrappers над trace/debug/info.
+   ----------------------------------------------------------------------------
+   PROCEDURE enter_f (
+      p_logger_name    IN VARCHAR2,
+      p_function_name  IN VARCHAR2,
+      p_message_text   IN VARCHAR2 DEFAULT NULL,
+      p_parameters     IN CLOB     DEFAULT NULL,
+
+      p_wsp_id         IN NUMBER   DEFAULT NULL,
+      p_inf_id         IN NUMBER   DEFAULT NULL,
+      p_req_id         IN NUMBER   DEFAULT NULL,
+      p_itm_id         IN NUMBER   DEFAULT NULL,
+      p_rsp_id         IN NUMBER   DEFAULT NULL,
+      p_correlation_id IN VARCHAR2 DEFAULT NULL,
+      p_person_id      IN NUMBER   DEFAULT NULL,
+      p_icusnum        IN NUMBER   DEFAULT NULL
+   );
+
+
+   PROCEDURE exit_f (
+      p_logger_name    IN VARCHAR2,
+      p_function_name  IN VARCHAR2,
+      p_message_text   IN VARCHAR2 DEFAULT NULL,
+      p_details_text   IN CLOB     DEFAULT NULL,
+
+      p_wsp_id         IN NUMBER   DEFAULT NULL,
+      p_inf_id         IN NUMBER   DEFAULT NULL,
+      p_req_id         IN NUMBER   DEFAULT NULL,
+      p_itm_id         IN NUMBER   DEFAULT NULL,
+      p_rsp_id         IN NUMBER   DEFAULT NULL,
+      p_correlation_id IN VARCHAR2 DEFAULT NULL,
+      p_person_id      IN NUMBER   DEFAULT NULL,
+      p_icusnum        IN NUMBER   DEFAULT NULL
+   );
+
+
+   PROCEDURE variable_Value (
+      p_logger_name    IN VARCHAR2,
+      p_variable_name  IN VARCHAR2,
+      p_value_text     IN VARCHAR2,
+
+      p_wsp_id         IN NUMBER   DEFAULT NULL,
+      p_inf_id         IN NUMBER   DEFAULT NULL,
+      p_req_id         IN NUMBER   DEFAULT NULL,
+      p_itm_id         IN NUMBER   DEFAULT NULL,
+      p_rsp_id         IN NUMBER   DEFAULT NULL,
+      p_correlation_id IN VARCHAR2 DEFAULT NULL,
+      p_person_id      IN NUMBER   DEFAULT NULL,
+      p_icusnum        IN NUMBER   DEFAULT NULL,
+
+      p_details_text   IN CLOB     DEFAULT NULL
+   );
+
+
+   PROCEDURE label (
+      p_logger_name    IN VARCHAR2,
+      p_message_text   IN VARCHAR2,
+
+      p_wsp_id         IN NUMBER   DEFAULT NULL,
+      p_inf_id         IN NUMBER   DEFAULT NULL,
+      p_req_id         IN NUMBER   DEFAULT NULL,
+      p_itm_id         IN NUMBER   DEFAULT NULL,
+      p_rsp_id         IN NUMBER   DEFAULT NULL,
+      p_correlation_id IN VARCHAR2 DEFAULT NULL,
+      p_person_id      IN NUMBER   DEFAULT NULL,
+      p_icusnum        IN NUMBER   DEFAULT NULL,
+
+      p_details_text   IN CLOB     DEFAULT NULL
+   );
+
+
+   PROCEDURE call_Stack (
+      p_logger_name    IN VARCHAR2,
+      p_message_text   IN VARCHAR2 DEFAULT NULL,
+
+      p_wsp_id         IN NUMBER   DEFAULT NULL,
+      p_inf_id         IN NUMBER   DEFAULT NULL,
+      p_req_id         IN NUMBER   DEFAULT NULL,
+      p_itm_id         IN NUMBER   DEFAULT NULL,
+      p_rsp_id         IN NUMBER   DEFAULT NULL,
+      p_correlation_id IN VARCHAR2 DEFAULT NULL,
+      p_person_id      IN NUMBER   DEFAULT NULL,
+      p_icusnum        IN NUMBER   DEFAULT NULL
+   );
+
+
+   PROCEDURE version (
+      p_logger_name   IN VARCHAR2,
+      p_object_name   IN VARCHAR2,
+      p_version_text  IN VARCHAR2,
+
+      p_wsp_id        IN NUMBER   DEFAULT NULL,
+      p_inf_id        IN NUMBER   DEFAULT NULL
+   );
+
 END MI_Logger;
 /
 CREATE OR REPLACE PACKAGE BODY MI_Logger
 AS
 
-   cVersion CONSTANT VARCHAR2(100) := 'MI_Logger 1.0.0';
+   cVersion CONSTANT VARCHAR2(100) := 'MI_Logger 1.1.0';
 
    g_log_enabled BOOLEAN     := TRUE;
    
@@ -712,6 +812,239 @@ END level_Rank;
          p_action_code, p_details_text
       );
    END error;
+
+
+   ----------------------------------------------------------------------------
+   PROCEDURE enter_f (
+      p_logger_name    IN VARCHAR2,
+      p_function_name  IN VARCHAR2,
+      p_message_text   IN VARCHAR2 DEFAULT NULL,
+      p_parameters     IN CLOB     DEFAULT NULL,
+
+      p_wsp_id         IN NUMBER   DEFAULT NULL,
+      p_inf_id         IN NUMBER   DEFAULT NULL,
+      p_req_id         IN NUMBER   DEFAULT NULL,
+      p_itm_id         IN NUMBER   DEFAULT NULL,
+      p_rsp_id         IN NUMBER   DEFAULT NULL,
+      p_correlation_id IN VARCHAR2 DEFAULT NULL,
+      p_person_id      IN NUMBER   DEFAULT NULL,
+      p_icusnum        IN NUMBER   DEFAULT NULL
+   )
+   IS
+      l_message VARCHAR2(32767);
+   BEGIN
+      l_message := NVL(p_function_name, '-');
+
+      IF p_message_text IS NOT NULL THEN
+         l_message :=
+            l_message
+            || ': '
+            || p_message_text;
+      END IF;
+
+      trace(
+         p_logger_name    => p_logger_name,
+         p_message_text   => l_message,
+
+         p_wsp_id         => p_wsp_id,
+         p_inf_id         => p_inf_id,
+         p_req_id         => p_req_id,
+         p_itm_id         => p_itm_id,
+         p_rsp_id         => p_rsp_id,
+         p_correlation_id => p_correlation_id,
+         p_person_id      => p_person_id,
+         p_icusnum        => p_icusnum,
+
+         p_action_code    => 'enter_f',
+         p_details_text   => p_parameters
+      );
+   END enter_f;
+
+
+   ----------------------------------------------------------------------------
+   PROCEDURE exit_f (
+      p_logger_name    IN VARCHAR2,
+      p_function_name  IN VARCHAR2,
+      p_message_text   IN VARCHAR2 DEFAULT NULL,
+      p_details_text   IN CLOB     DEFAULT NULL,
+
+      p_wsp_id         IN NUMBER   DEFAULT NULL,
+      p_inf_id         IN NUMBER   DEFAULT NULL,
+      p_req_id         IN NUMBER   DEFAULT NULL,
+      p_itm_id         IN NUMBER   DEFAULT NULL,
+      p_rsp_id         IN NUMBER   DEFAULT NULL,
+      p_correlation_id IN VARCHAR2 DEFAULT NULL,
+      p_person_id      IN NUMBER   DEFAULT NULL,
+      p_icusnum        IN NUMBER   DEFAULT NULL
+   )
+   IS
+      l_message VARCHAR2(32767);
+   BEGIN
+      l_message := NVL(p_function_name, '-');
+
+      IF p_message_text IS NOT NULL THEN
+         l_message :=
+            l_message
+            || ': '
+            || p_message_text;
+      END IF;
+
+      trace(
+         p_logger_name    => p_logger_name,
+         p_message_text   => l_message,
+
+         p_wsp_id         => p_wsp_id,
+         p_inf_id         => p_inf_id,
+         p_req_id         => p_req_id,
+         p_itm_id         => p_itm_id,
+         p_rsp_id         => p_rsp_id,
+         p_correlation_id => p_correlation_id,
+         p_person_id      => p_person_id,
+         p_icusnum        => p_icusnum,
+
+         p_action_code    => 'exit_f',
+         p_details_text   => p_details_text
+      );
+   END exit_f;
+
+
+   ----------------------------------------------------------------------------
+   PROCEDURE variable_Value (
+      p_logger_name    IN VARCHAR2,
+      p_variable_name  IN VARCHAR2,
+      p_value_text     IN VARCHAR2,
+
+      p_wsp_id         IN NUMBER   DEFAULT NULL,
+      p_inf_id         IN NUMBER   DEFAULT NULL,
+      p_req_id         IN NUMBER   DEFAULT NULL,
+      p_itm_id         IN NUMBER   DEFAULT NULL,
+      p_rsp_id         IN NUMBER   DEFAULT NULL,
+      p_correlation_id IN VARCHAR2 DEFAULT NULL,
+      p_person_id      IN NUMBER   DEFAULT NULL,
+      p_icusnum        IN NUMBER   DEFAULT NULL,
+
+      p_details_text   IN CLOB     DEFAULT NULL
+   )
+   IS
+   BEGIN
+      trace(
+         p_logger_name    => p_logger_name,
+         p_message_text   =>
+              NVL(p_variable_name, '-')
+           || ' = '
+           || NVL(p_value_text, '<NULL>'),
+
+         p_wsp_id         => p_wsp_id,
+         p_inf_id         => p_inf_id,
+         p_req_id         => p_req_id,
+         p_itm_id         => p_itm_id,
+         p_rsp_id         => p_rsp_id,
+         p_correlation_id => p_correlation_id,
+         p_person_id      => p_person_id,
+         p_icusnum        => p_icusnum,
+
+         p_action_code    => 'val',
+         p_details_text   => p_details_text
+      );
+   END variable_Value;
+
+
+   ----------------------------------------------------------------------------
+   PROCEDURE label (
+      p_logger_name    IN VARCHAR2,
+      p_message_text   IN VARCHAR2,
+
+      p_wsp_id         IN NUMBER   DEFAULT NULL,
+      p_inf_id         IN NUMBER   DEFAULT NULL,
+      p_req_id         IN NUMBER   DEFAULT NULL,
+      p_itm_id         IN NUMBER   DEFAULT NULL,
+      p_rsp_id         IN NUMBER   DEFAULT NULL,
+      p_correlation_id IN VARCHAR2 DEFAULT NULL,
+      p_person_id      IN NUMBER   DEFAULT NULL,
+      p_icusnum        IN NUMBER   DEFAULT NULL,
+
+      p_details_text   IN CLOB     DEFAULT NULL
+   )
+   IS
+   BEGIN
+      debug(
+         p_logger_name    => p_logger_name,
+         p_message_text   => p_message_text,
+
+         p_wsp_id         => p_wsp_id,
+         p_inf_id         => p_inf_id,
+         p_req_id         => p_req_id,
+         p_itm_id         => p_itm_id,
+         p_rsp_id         => p_rsp_id,
+         p_correlation_id => p_correlation_id,
+         p_person_id      => p_person_id,
+         p_icusnum        => p_icusnum,
+
+         p_action_code    => 'label',
+         p_details_text   => p_details_text
+      );
+   END label;
+
+
+   ----------------------------------------------------------------------------
+   PROCEDURE call_Stack (
+      p_logger_name    IN VARCHAR2,
+      p_message_text   IN VARCHAR2 DEFAULT NULL,
+
+      p_wsp_id         IN NUMBER   DEFAULT NULL,
+      p_inf_id         IN NUMBER   DEFAULT NULL,
+      p_req_id         IN NUMBER   DEFAULT NULL,
+      p_itm_id         IN NUMBER   DEFAULT NULL,
+      p_rsp_id         IN NUMBER   DEFAULT NULL,
+      p_correlation_id IN VARCHAR2 DEFAULT NULL,
+      p_person_id      IN NUMBER   DEFAULT NULL,
+      p_icusnum        IN NUMBER   DEFAULT NULL
+   )
+   IS
+   BEGIN
+      debug(
+         p_logger_name    => p_logger_name,
+         p_message_text   => NVL(p_message_text, 'call stack'),
+
+         p_wsp_id         => p_wsp_id,
+         p_inf_id         => p_inf_id,
+         p_req_id         => p_req_id,
+         p_itm_id         => p_itm_id,
+         p_rsp_id         => p_rsp_id,
+         p_correlation_id => p_correlation_id,
+         p_person_id      => p_person_id,
+         p_icusnum        => p_icusnum,
+
+         p_action_code    => 'call_stack',
+         p_details_text   => DBMS_UTILITY.format_call_stack
+      );
+   END call_Stack;
+
+
+   ----------------------------------------------------------------------------
+   PROCEDURE version (
+      p_logger_name   IN VARCHAR2,
+      p_object_name   IN VARCHAR2,
+      p_version_text  IN VARCHAR2,
+
+      p_wsp_id        IN NUMBER   DEFAULT NULL,
+      p_inf_id        IN NUMBER   DEFAULT NULL
+   )
+   IS
+   BEGIN
+      info(
+         p_logger_name  => p_logger_name,
+         p_message_text =>
+              NVL(p_object_name, '-')
+           || ': '
+           || NVL(p_version_text, '<NULL>'),
+
+         p_wsp_id       => p_wsp_id,
+         p_inf_id       => p_inf_id,
+
+         p_action_code  => 'version'
+      );
+   END version;
 
 END MI_Logger;
 /
