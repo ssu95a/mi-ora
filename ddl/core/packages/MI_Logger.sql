@@ -163,6 +163,24 @@ AS
    );
 
 
+   PROCEDURE fatal (
+      p_logger_name    IN VARCHAR2,
+      p_message_text   IN VARCHAR2,
+
+      p_wsp_id         IN NUMBER   DEFAULT NULL,
+      p_inf_id         IN NUMBER   DEFAULT NULL,
+      p_req_id         IN NUMBER   DEFAULT NULL,
+      p_itm_id         IN NUMBER   DEFAULT NULL,
+      p_rsp_id         IN NUMBER   DEFAULT NULL,
+      p_correlation_id IN VARCHAR2 DEFAULT NULL,
+      p_person_id      IN NUMBER   DEFAULT NULL,
+      p_icusnum        IN NUMBER   DEFAULT NULL,
+
+      p_action_code    IN VARCHAR2 DEFAULT NULL,
+      p_details_text   IN CLOB     DEFAULT NULL
+   );
+
+
    ----------------------------------------------------------------------------
    -- Синтаксический сахар.
    --
@@ -816,6 +834,33 @@ END level_Code;
          p_action_code, p_details_text
       );
    END error;
+
+
+   PROCEDURE fatal (
+      p_logger_name    IN VARCHAR2,
+      p_message_text   IN VARCHAR2,
+      p_wsp_id         IN NUMBER   DEFAULT NULL,
+      p_inf_id         IN NUMBER   DEFAULT NULL,
+      p_req_id         IN NUMBER   DEFAULT NULL,
+      p_itm_id         IN NUMBER   DEFAULT NULL,
+      p_rsp_id         IN NUMBER   DEFAULT NULL,
+      p_correlation_id IN VARCHAR2 DEFAULT NULL,
+      p_person_id      IN NUMBER   DEFAULT NULL,
+      p_icusnum        IN NUMBER   DEFAULT NULL,
+      p_action_code    IN VARCHAR2 DEFAULT NULL,
+      p_details_text   IN CLOB     DEFAULT NULL
+   )
+   IS
+   BEGIN
+      log(
+         p_logger_name, p_message_text, LEVEL_FATAL,
+         p_wsp_id, p_inf_id,
+         p_req_id, p_itm_id, p_rsp_id,
+         p_correlation_id,
+         p_person_id, p_icusnum,
+         p_action_code, p_details_text
+      );
+   END fatal;
 
 
    ----------------------------------------------------------------------------
