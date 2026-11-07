@@ -53,6 +53,30 @@ DECLARE
 
 
    ---------------------------------------------------------------------------
+   PROCEDURE assert_Success (
+      p_result   IN MI_ResultCtx.exec_Result_t,
+      p_message  IN VARCHAR2
+   )
+   IS
+   BEGIN
+      IF MI_ResultCtx.is_Failed(p_result) THEN
+         fail(
+            p_message
+            || ' [result_code='
+            || NVL(p_result.result_code, '<NULL>')
+            || ', result_info='
+            || NVL(p_result.result_info, '<NULL>')
+            || ', cause_code='
+            || NVL(p_result.cause_code, '<NULL>')
+            || ', cause_info='
+            || NVL(p_result.cause_info, '<NULL>')
+            || ']'
+         );
+      END IF;
+   END assert_Success;
+
+
+   ---------------------------------------------------------------------------
    PROCEDURE assert_Equals (
       p_actual   IN VARCHAR2,
       p_expected IN VARCHAR2,
@@ -250,10 +274,7 @@ BEGIN
          p_info   => 'smoke processing'
       );
 
-   assert_True(
-      MI_ResultCtx.is_Success(l_result),
-      'take_For_Proc failed'
-   );
+   assert_Success(l_result, 'take_For_Proc failed');
 
    assert_True(
       MI_Request_Api.get_Status(l_req_id) = MI_Request_Api.STATUS_BUSY,
@@ -273,10 +294,7 @@ BEGIN
 
    l_result := MI_Request_Api.to_Sent(l_req_id);
 
-   assert_True(
-      MI_ResultCtx.is_Success(l_result),
-      'to_Sent failed'
-   );
+   assert_Success(l_result, 'to_Sent failed');
 
    assert_True(
       MI_Request_Api.get_Status(l_req_id) = MI_Request_Api.STATUS_SENT,
@@ -286,10 +304,7 @@ BEGIN
 
    l_result := MI_Request_Api.to_Success(l_req_id);
 
-   assert_True(
-      MI_ResultCtx.is_Success(l_result),
-      'to_Success failed'
-   );
+   assert_Success(l_result, 'to_Success failed');
 
    assert_True(
       MI_Request_Api.get_Status(l_req_id) = MI_Request_Api.STATUS_DONE,
@@ -327,15 +342,15 @@ BEGIN
    DBMS_OUTPUT.put_line('6. ERROR may be taken for processing again');
 
    l_result := MI_Request_Api.create_Request(p_inf_id => l_inf_id);
-   assert_True(MI_ResultCtx.is_Success(l_result), 'second create failed');
+   assert_Success(l_result, 'second create failed');
 
    l_req_id2 := result_Req_Id(l_result);
 
    l_result := MI_Request_Api.take_For_Proc(l_req_id2, 'first attempt');
-   assert_True(MI_ResultCtx.is_Success(l_result), 'second take failed');
+   assert_Success(l_result, 'second take failed');
 
    l_result := MI_Request_Api.to_Error(l_req_id2);
-   assert_True(MI_ResultCtx.is_Success(l_result), 'BUSY -> ERROR failed');
+   assert_Success(l_result, 'BUSY -> ERROR failed');
 
    assert_True(
       MI_Request_Api.get_Status(l_req_id2) = MI_Request_Api.STATUS_ERROR,
@@ -343,7 +358,7 @@ BEGIN
    );
 
    l_result := MI_Request_Api.take_For_Proc(l_req_id2, 'retry');
-   assert_True(MI_ResultCtx.is_Success(l_result), 'ERROR -> BUSY retry failed');
+   assert_Success(l_result, 'ERROR -> BUSY retry failed');
 
    assert_True(
       MI_Request_Api.get_Status(l_req_id2) = MI_Request_Api.STATUS_BUSY,
@@ -357,18 +372,18 @@ BEGIN
    DBMS_OUTPUT.put_line('7. SENT -> ERROR');
 
    l_result := MI_Request_Api.create_Request(p_inf_id => l_inf_id);
-   assert_True(MI_ResultCtx.is_Success(l_result), 'third create failed');
+   assert_Success(l_result, 'third create failed');
 
    l_req_id3 := result_Req_Id(l_result);
 
    l_result := MI_Request_Api.take_For_Proc(l_req_id3);
-   assert_True(MI_ResultCtx.is_Success(l_result), 'third take failed');
+   assert_Success(l_result, 'third take failed');
 
    l_result := MI_Request_Api.to_Sent(l_req_id3);
-   assert_True(MI_ResultCtx.is_Success(l_result), 'third to_Sent failed');
+   assert_Success(l_result, 'third to_Sent failed');
 
    l_result := MI_Request_Api.to_Error(l_req_id3);
-   assert_True(MI_ResultCtx.is_Success(l_result), 'SENT -> ERROR failed');
+   assert_Success(l_result, 'SENT -> ERROR failed');
 
    assert_True(
       MI_Request_Api.get_Status(l_req_id3) = MI_Request_Api.STATUS_ERROR,
@@ -387,10 +402,7 @@ BEGIN
          p_info   => 'smoke reset'
       );
 
-   assert_True(
-      MI_ResultCtx.is_Success(l_result),
-      'reset BUSY -> NEW failed'
-   );
+   assert_Success(l_result, 'reset BUSY -> NEW failed');
 
    assert_Equals(
       l_result.result_code,
@@ -406,10 +418,7 @@ BEGIN
 
    l_result := MI_Request_Api.reset(l_req_id2, 'second reset');
 
-   assert_True(
-      MI_ResultCtx.is_Success(l_result),
-      'idempotent reset(NEW) failed'
-   );
+   assert_Success(l_result, 'idempotent reset(NEW) failed');
 
    assert_Equals(
       l_result.result_code,
