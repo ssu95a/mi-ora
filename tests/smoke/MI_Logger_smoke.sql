@@ -138,7 +138,7 @@ BEGIN
    DBMS_OUTPUT.put_line('1. basic autonomous write');
 
    MI_Logger.enable_Log;
-   MI_Logger.set_Min_Level(MI_Logger.cLevel_Trc);
+   MI_Logger.set_Min_Level(MI_Logger.LEVEL_TRACE);
 
    l_message := msg('basic');
 
@@ -173,7 +173,17 @@ BEGIN
    ---------------------------------------------------------------------------
    DBMS_OUTPUT.put_line('2. level filtering');
 
-   MI_Logger.set_Min_Level(MI_Logger.cLevel_Wrn);
+   assert_True(
+      MI_Logger.is_Enabled(MI_Logger.LEVEL_ALL) = FALSE,
+      'LEVEL_ALL is a threshold, not an event level'
+   );
+
+   assert_True(
+      MI_Logger.is_Enabled(MI_Logger.LEVEL_OFF) = FALSE,
+      'LEVEL_OFF is a threshold, not an event level'
+   );
+
+   MI_Logger.set_Min_Level(MI_Logger.LEVEL_WARN);
 
    l_message := msg('filtered-debug');
 
@@ -226,7 +236,7 @@ BEGIN
    );
 
    MI_Logger.enable_Log;
-   MI_Logger.set_Min_Level(MI_Logger.cLevel_Trc);
+   MI_Logger.set_Min_Level(MI_Logger.LEVEL_TRACE);
 
    DBMS_OUTPUT.put_line('   OK');
 
@@ -464,7 +474,7 @@ BEGIN
       Не оставляем вызывающую session в trace/disabled режиме.
    */
    MI_Logger.enable_Log;
-   MI_Logger.set_Min_Level(MI_Logger.cLevel_Dbg);
+   MI_Logger.set_Min_Level(MI_Logger.LEVEL_DEBUG);
 
    DBMS_OUTPUT.put_line('');
    DBMS_OUTPUT.put_line('============================================================');
@@ -478,7 +488,7 @@ EXCEPTION
       */
       BEGIN
          MI_Logger.enable_Log;
-         MI_Logger.set_Min_Level(MI_Logger.cLevel_Dbg);
+         MI_Logger.set_Min_Level(MI_Logger.LEVEL_DEBUG);
       EXCEPTION
          WHEN OTHERS THEN
             NULL;
