@@ -1,3 +1,7 @@
 # Local Oracle credentials
 tools/oracle.env
 *.local.env
+
+# Generated one-shot migration output
+/mi-wsp-inf.oracle.sql
+/mi-wsp-inf.oracle.sql.tmp
