@@ -296,7 +296,7 @@ BEGIN
       )
       AND (
              message_text LIKE '%' || l_run_id || '%'
-          OR details_text LIKE '%' || l_run_id || '%'
+          OR DBMS_LOB.INSTR(details_text, l_run_id) > 0
       );
 
    assert_True(
