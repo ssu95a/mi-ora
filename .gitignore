@@ -1,0 +1,3 @@
+# Local Oracle credentials
+tools/oracle.env
+*.local.env
