@@ -1,8 +1,7 @@
 CREATE OR REPLACE PACKAGE MI_Utils
 IS
 
-   VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.1.0} {07.11.2026} Sulimoff$';
+  VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.2} {07.11.2026} Sulimoff$';
 
 
    ----------------------------------------------------------------------------
@@ -99,7 +98,6 @@ IS
 
 END MI_Utils;
 /
-
 CREATE OR REPLACE PACKAGE BODY MI_Utils
 IS
 
