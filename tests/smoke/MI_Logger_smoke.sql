@@ -12,9 +12,6 @@ DECLARE
    l_run_id          VARCHAR2(32) := LOWER(RAWTOHEX(SYS_GUID()));
    l_message         VARCHAR2(2000);
 
-   l_inf_id          MI_INF.INF_ID%TYPE;
-   l_wsp_id          MI_INF.WSP_ID%TYPE;
-
    l_req_id          MI_REQ.REQ_ID%TYPE;
    l_req_inf_id      MI_REQ.INF_ID%TYPE;
    l_req_wsp_id      MI_INF.WSP_ID%TYPE;
@@ -111,29 +108,6 @@ DECLARE
 
 
 BEGIN
-   /*
-      Нужен существующий MI_INF для корректного диагностического контекста.
-   */
-   BEGIN
-      SELECT inf_id,
-             wsp_id
-        INTO l_inf_id,
-             l_wsp_id
-        FROM (
-           SELECT inf_id,
-                  wsp_id
-             FROM MI_INF
-            WHERE wsp_id IS NOT NULL
-            ORDER BY inf_id
-        )
-       WHERE ROWNUM = 1;
-
-   EXCEPTION
-      WHEN NO_DATA_FOUND THEN
-         fail('MI_INF contains no row with WSP_ID');
-   END;
-
-
    ---------------------------------------------------------------------------
    DBMS_OUTPUT.put_line('1. basic autonomous write');
 
@@ -145,8 +119,6 @@ BEGIN
    MI_Logger.info(
       p_logger_name    => c_logger,
       p_message_text   => l_message,
-      p_wsp_id         => l_wsp_id,
-      p_inf_id         => l_inf_id,
       p_correlation_id => MI_Utils.uuid_V7,
       p_action_code    => 'smoke'
    );
@@ -189,9 +161,7 @@ BEGIN
 
    MI_Logger.debug(
       p_logger_name  => c_logger,
-      p_message_text => l_message,
-      p_wsp_id       => l_wsp_id,
-      p_inf_id       => l_inf_id
+      p_message_text => l_message
    );
 
    assert_True(
@@ -203,9 +173,7 @@ BEGIN
 
    MI_Logger.warn(
       p_logger_name  => c_logger,
-      p_message_text => l_message,
-      p_wsp_id       => l_wsp_id,
-      p_inf_id       => l_inf_id
+      p_message_text => l_message
    );
 
    assert_True(
@@ -224,9 +192,7 @@ BEGIN
 
    MI_Logger.error(
       p_logger_name  => c_logger,
-      p_message_text => l_message,
-      p_wsp_id       => l_wsp_id,
-      p_inf_id       => l_inf_id
+      p_message_text => l_message
    );
 
    assert_True(
@@ -239,9 +205,7 @@ BEGIN
 
    MI_Logger.fatal(
       p_logger_name  => c_logger,
-      p_message_text => l_message,
-      p_wsp_id       => l_wsp_id,
-      p_inf_id       => l_inf_id
+      p_message_text => l_message
    );
 
    assert_True(
@@ -273,9 +237,7 @@ BEGIN
 
    MI_Logger.error(
       p_logger_name  => c_logger,
-      p_message_text => l_message,
-      p_wsp_id       => l_wsp_id,
-      p_inf_id       => l_inf_id
+      p_message_text => l_message
    );
 
    assert_True(
@@ -296,48 +258,36 @@ BEGIN
       p_logger_name   => c_logger,
       p_function_name => 'smoke_proc',
       p_message_text  => msg('enter'),
-      p_parameters    => TO_CLOB('p1=1'),
-      p_wsp_id        => l_wsp_id,
-      p_inf_id        => l_inf_id
+      p_parameters    => TO_CLOB('p1=1')
    );
 
    MI_Logger.exit_f(
       p_logger_name   => c_logger,
       p_function_name => 'smoke_proc',
-      p_message_text  => msg('exit'),
-      p_wsp_id        => l_wsp_id,
-      p_inf_id        => l_inf_id
+      p_message_text  => msg('exit')
    );
 
    MI_Logger.variable_Value(
       p_logger_name   => c_logger,
       p_variable_name => 'l_value',
       p_value_text    => '42',
-      p_wsp_id        => l_wsp_id,
-      p_inf_id        => l_inf_id,
       p_details_text  => TO_CLOB(msg('val'))
    );
 
    MI_Logger.label(
       p_logger_name  => c_logger,
-      p_message_text => msg('label'),
-      p_wsp_id       => l_wsp_id,
-      p_inf_id       => l_inf_id
+      p_message_text => msg('label')
    );
 
    MI_Logger.call_Stack(
       p_logger_name  => c_logger,
-      p_message_text => msg('stack'),
-      p_wsp_id       => l_wsp_id,
-      p_inf_id       => l_inf_id
+      p_message_text => msg('stack')
    );
 
    MI_Logger.version(
       p_logger_name  => c_logger,
       p_object_name  => 'MI_LOGGER_SMOKE',
-      p_version_text => msg('version'),
-      p_wsp_id       => l_wsp_id,
-      p_inf_id       => l_inf_id
+      p_version_text => msg('version')
    );
 
    SELECT COUNT(*)
@@ -374,9 +324,7 @@ BEGIN
 
    MI_Logger.info(
       p_logger_name  => c_logger,
-      p_message_text => l_message,
-      p_wsp_id       => l_wsp_id,
-      p_inf_id       => l_inf_id
+      p_message_text => l_message
    );
 
    ROLLBACK TO before_logger;
@@ -487,7 +435,7 @@ BEGIN
 
       DBMS_OUTPUT.put_line('   OK');
    ELSE
-      DBMS_OUTPUT.put_line('   SKIP: MI_REQ is empty');
+      DBMS_OUTPUT.put_line('   SKIP: no MI_REQ row with matching MI_INF');
    END IF;
 
 
@@ -504,8 +452,6 @@ BEGIN
    MI_Logger.error(
       p_logger_name  => c_logger,
       p_message_text => l_message,
-      p_wsp_id       => l_wsp_id,
-      p_inf_id       => l_inf_id,
       p_icusnum      => 99999999999999999999
    );
 
