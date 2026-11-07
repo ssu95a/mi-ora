@@ -1,4 +1,5 @@
 \set ON_ERROR_STOP on
+\encoding UTF8
 \pset tuples_only on
 \pset format unaligned
 \pset pager off
