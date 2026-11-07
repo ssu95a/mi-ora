@@ -1,11 +1,20 @@
 CREATE OR REPLACE PACKAGE MI_Logger
 AS
 
-   cLevel_Trc CONSTANT VARCHAR2(3) := 'trc';
-   cLevel_Dbg CONSTANT VARCHAR2(3) := 'dbg';
-   cLevel_Inf CONSTANT VARCHAR2(3) := 'inf';
-   cLevel_Wrn CONSTANT VARCHAR2(3) := 'wrn';
-   cLevel_Err CONSTANT VARCHAR2(3) := 'err';
+   -- Уровни логирования.
+   --
+   -- LEVEL_ALL / LEVEL_OFF используются как значения порога.
+   -- В log() допустимыми уровнями события являются TRACE .. FATAL.
+   SUBTYPE Level_t IS PLS_INTEGER RANGE 0 .. 7;
+
+   LEVEL_ALL   CONSTANT Level_t := 0;
+   LEVEL_TRACE CONSTANT Level_t := 1;
+   LEVEL_DEBUG CONSTANT Level_t := 2;
+   LEVEL_INFO  CONSTANT Level_t := 3;
+   LEVEL_WARN  CONSTANT Level_t := 4;
+   LEVEL_ERROR CONSTANT Level_t := 5;
+   LEVEL_FATAL CONSTANT Level_t := 6;
+   LEVEL_OFF   CONSTANT Level_t := 7;
 
 
    FUNCTION get_Version
@@ -25,12 +34,12 @@ AS
       По умолчанию: dbg.
    */
    PROCEDURE set_Min_Level (
-      p_level_code IN VARCHAR2
+      p_level IN Level_t
    );
 
 
    FUNCTION is_Enabled (
-      p_level_code IN VARCHAR2
+      p_level IN Level_t
    )
       RETURN BOOLEAN;
 
@@ -45,7 +54,7 @@ AS
       p_logger_name    IN VARCHAR2,
       p_message_text   IN VARCHAR2,
 
-      p_level_code     IN VARCHAR2 DEFAULT cLevel_Dbg,
+      p_level          IN Level_t  DEFAULT LEVEL_DEBUG,
 
       p_wsp_id         IN NUMBER   DEFAULT NULL,
       p_inf_id         IN NUMBER   DEFAULT NULL,
@@ -258,11 +267,11 @@ END MI_Logger;
 CREATE OR REPLACE PACKAGE BODY MI_Logger
 AS
 
-   cVersion CONSTANT VARCHAR2(100) := 'MI_Logger 1.1.0';
+   cVersion CONSTANT VARCHAR2(100) := 'MI_Logger 1.2.0';
 
    g_log_enabled BOOLEAN     := TRUE;
    
-   g_min_level   VARCHAR2(3) := cLevel_Dbg;
+   g_min_level   Level_t := LEVEL_DEBUG;
 
 
 /* */
@@ -274,41 +283,29 @@ BEGIN
 END get_Version;
 
 
-FUNCTION level_Rank (
-   p_level_code IN VARCHAR2
+FUNCTION level_Code (
+   p_level IN Level_t
 )
-   RETURN PLS_INTEGER
+   RETURN VARCHAR2
 IS
 BEGIN
-   RETURN CASE LOWER(TRIM(p_level_code))
-             WHEN cLevel_Trc THEN 10
-             WHEN cLevel_Dbg THEN 20
-             WHEN cLevel_Inf THEN 30
-             WHEN cLevel_Wrn THEN 40
-             WHEN cLevel_Err THEN 50
+   RETURN CASE p_level
+             WHEN LEVEL_TRACE THEN 'trc'
+             WHEN LEVEL_DEBUG THEN 'dbg'
+             WHEN LEVEL_INFO  THEN 'inf'
+             WHEN LEVEL_WARN  THEN 'wrn'
+             WHEN LEVEL_ERROR THEN 'err'
+
+             /*
+                MI_LOG v1 физически хранит только trc/dbg/inf/wrn/err.
+                Пока FATAL сохраняем как err, чтобы не требовать изменения DDL
+                и не терять запись из-за CHECK constraint.
+             */
+             WHEN LEVEL_FATAL THEN 'err'
+
              ELSE NULL
           END;
-END level_Rank;
-
-
-   ---------------------------------------------------------------------------
-   FUNCTION normalize_Level (
-      p_level_code IN VARCHAR2
-   )
-      RETURN VARCHAR2
-   IS
-      l_level_code VARCHAR2(3);
-   BEGIN
-
-      l_level_code := LOWER(TRIM(p_level_code));
-
-      IF level_Rank(l_level_code) IS NULL THEN
-         RETURN cLevel_Dbg;
-      END IF;
-
-      RETURN l_level_code;
-
-   END normalize_Level;
+END level_Code;
 
 
    ---------------------------------------------------------------------------
@@ -329,44 +326,44 @@ END level_Rank;
 
    ---------------------------------------------------------------------------
    PROCEDURE set_Min_Level (
-      p_level_code IN VARCHAR2
+      p_level IN Level_t
    )
    IS
-      l_level_code VARCHAR2(3);
    BEGIN
-
-      l_level_code := LOWER(TRIM(p_level_code));
-
-      IF level_Rank(l_level_code) IS NULL THEN
+      IF p_level IS NULL THEN
          RAISE_APPLICATION_ERROR(
             -20000,
-            'MI_Logger: unsupported log level: ' ||
-            NVL(p_level_code, '<NULL>')
+            'MI_Logger: log level must not be NULL'
          );
       END IF;
 
-      g_min_level := l_level_code;
-
+      g_min_level := p_level;
    END set_Min_Level;
 
 
    ---------------------------------------------------------------------------
    FUNCTION is_Enabled (
-      p_level_code IN VARCHAR2
+      p_level IN Level_t
    )
       RETURN BOOLEAN
    IS
-      l_level_code VARCHAR2(3);
    BEGIN
-
       IF NOT g_log_enabled THEN
          RETURN FALSE;
       END IF;
 
-      l_level_code := normalize_Level(p_level_code);
+      IF p_level IS NULL
+         OR p_level <= LEVEL_ALL
+         OR p_level >= LEVEL_OFF
+      THEN
+         RETURN FALSE;
+      END IF;
 
-      RETURN level_Rank(l_level_code) >= level_Rank(g_min_level);
+      IF g_min_level = LEVEL_OFF THEN
+         RETURN FALSE;
+      END IF;
 
+      RETURN p_level >= g_min_level;
    END is_Enabled;
 
 
@@ -503,7 +500,7 @@ END level_Rank;
    PROCEDURE insert_Row_AT (
       p_au_session_id   IN NUMBER,
 
-      p_level_code      IN VARCHAR2,
+      p_level            IN Level_t,
       p_logger_name     IN VARCHAR2,
       p_action_code     IN VARCHAR2,
       p_message_text    IN VARCHAR2,
@@ -523,7 +520,14 @@ END level_Rank;
    )
    IS
       PRAGMA AUTONOMOUS_TRANSACTION;
+
+      l_level_code VARCHAR2(3);
    BEGIN
+      l_level_code := level_Code(p_level);
+
+      IF l_level_code IS NULL THEN
+         RETURN;
+      END IF;
 
       INSERT INTO MI_LOG (
          au_session_id,
@@ -549,7 +553,7 @@ END level_Rank;
       VALUES (
          p_au_session_id,
 
-         normalize_Level(p_level_code),
+         l_level_code,
          SUBSTR(NVL(p_logger_name, '-'),       1, 64),
          SUBSTR(p_action_code,                  1, 64),
          SUBSTR(NVL(p_message_text, '<empty>'),1, 2000),
@@ -588,7 +592,7 @@ END level_Rank;
       p_logger_name    IN VARCHAR2,
       p_message_text   IN VARCHAR2,
 
-      p_level_code     IN VARCHAR2 DEFAULT cLevel_Dbg,
+      p_level          IN Level_t  DEFAULT LEVEL_DEBUG,
 
       p_wsp_id         IN NUMBER   DEFAULT NULL,
       p_inf_id         IN NUMBER   DEFAULT NULL,
@@ -613,7 +617,7 @@ END level_Rank;
       l_correlation_id VARCHAR2(36);
    BEGIN
 
-      IF NOT is_Enabled(p_level_code) THEN
+      IF NOT is_Enabled(p_level) THEN
          RETURN;
       END IF;
 
@@ -650,7 +654,7 @@ END level_Rank;
       insert_Row_AT(
          p_au_session_id  => l_au_session_id,
 
-         p_level_code     => p_level_code,
+         p_level          => p_level,
          p_logger_name    => p_logger_name,
          p_action_code    => p_action_code,
          p_message_text   => p_message_text,
@@ -696,7 +700,7 @@ END level_Rank;
    IS
    BEGIN
       log(
-         p_logger_name, p_message_text, cLevel_Trc,
+         p_logger_name, p_message_text, LEVEL_TRACE,
          p_wsp_id, p_inf_id,
          p_req_id, p_itm_id, p_rsp_id,
          p_correlation_id,
@@ -723,7 +727,7 @@ END level_Rank;
    IS
    BEGIN
       log(
-         p_logger_name, p_message_text, cLevel_Dbg,
+         p_logger_name, p_message_text, LEVEL_DEBUG,
          p_wsp_id, p_inf_id,
          p_req_id, p_itm_id, p_rsp_id,
          p_correlation_id,
@@ -750,7 +754,7 @@ END level_Rank;
    IS
    BEGIN
       log(
-         p_logger_name, p_message_text, cLevel_Inf,
+         p_logger_name, p_message_text, LEVEL_INFO,
          p_wsp_id, p_inf_id,
          p_req_id, p_itm_id, p_rsp_id,
          p_correlation_id,
@@ -777,7 +781,7 @@ END level_Rank;
    IS
    BEGIN
       log(
-         p_logger_name, p_message_text, cLevel_Wrn,
+         p_logger_name, p_message_text, LEVEL_WARN,
          p_wsp_id, p_inf_id,
          p_req_id, p_itm_id, p_rsp_id,
          p_correlation_id,
@@ -804,7 +808,7 @@ END level_Rank;
    IS
    BEGIN
       log(
-         p_logger_name, p_message_text, cLevel_Err,
+         p_logger_name, p_message_text, LEVEL_ERROR,
          p_wsp_id, p_inf_id,
          p_req_id, p_itm_id, p_rsp_id,
          p_correlation_id,
