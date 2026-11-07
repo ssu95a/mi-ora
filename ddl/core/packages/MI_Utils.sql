@@ -101,11 +101,13 @@ END MI_Utils;
 CREATE OR REPLACE PACKAGE BODY MI_Utils
 IS
 
-   cFmt_Money CONSTANT VARCHAR2(50) :=
-      'FM9999999999999990D99999999';
+   cFmt_Money     CONSTANT VARCHAR2(50) := 'FM9999999999999990D99999999';
 
+   d_unix_Epoch   CONSTANT DATE := DATE '1970-01-01';
 
-   ----------------------------------------------------------------------------
+   t_unix_Epoch   CONSTANT TIMESTAMP := TIMESTAMP '1970-01-01 00:00:00';
+
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2
    IS
@@ -114,7 +116,7 @@ IS
    END get_Version;
 
 
-   ----------------------------------------------------------------------------
+   /* */
    FUNCTION to_Attribute_List (
       p_parameters IN ParameterList_t
    )
@@ -153,7 +155,7 @@ IS
    END to_Attribute_List;
 
 
-   ----------------------------------------------------------------------------
+   /* */
    FUNCTION to_Bool (
       p_value IN PLS_INTEGER
    )
@@ -170,7 +172,7 @@ IS
    END to_Bool;
 
 
-   ----------------------------------------------------------------------------
+   /* */
    FUNCTION to_Number (
       p_value IN BOOLEAN
    )
@@ -191,7 +193,7 @@ IS
    END to_Number;
 
 
-   ----------------------------------------------------------------------------
+   /* */
    FUNCTION to_Char (
       p_value IN BOOLEAN
    )
@@ -212,7 +214,7 @@ IS
    END to_Char;
 
 
-   ----------------------------------------------------------------------------
+   /* */
    FUNCTION to_Bool (
       p_value IN VARCHAR2
    )
@@ -227,27 +229,13 @@ IS
 
       l_value := UPPER(TRIM(p_value));
 
-      IF l_value IN (
-         'TRUE',
-         '1',
-         'ON',
-         'ИСТИНА',
-         'ДА',
-         'OK'
-      )
+      IF l_value IN ( 'TRUE', '1', 'ON', 'ИСТИНА', 'ДА', 'OK' )
       THEN
          RETURN TRUE;
       END IF;
 
 
-      IF l_value IN (
-         'FALSE',
-         '0',
-         'OFF',
-         'ЛОЖЬ',
-         'НЕТ',
-         'FAIL'
-      )
+      IF l_value IN ( 'FALSE', '0', 'OFF', 'ЛОЖЬ', 'НЕТ', 'FAIL' )
       THEN
          RETURN FALSE;
       END IF;
@@ -257,7 +245,7 @@ IS
    END to_Bool;
 
 
-   ----------------------------------------------------------------------------
+   /* */
    FUNCTION to_Money (
       p_value IN VARCHAR2
    )
@@ -270,25 +258,11 @@ IS
          RETURN NULL;
       END IF;
 
-
-      l_value :=
-         REGEXP_REPLACE(
-            p_value,
-            '[^,.0-9-]',
-            ''
-         );
+      l_value := REGEXP_REPLACE( p_value, '[^,.0-9-]', '' );
 
       l_value := REPLACE(l_value, ',', '.');
 
-
-      RETURN ROUND(
-         STANDARD.TO_NUMBER(
-            l_value,
-            cFmt_Money,
-            'NLS_NUMERIC_CHARACTERS=''.,'''
-         ),
-         2
-      );
+      RETURN ROUND( STANDARD.TO_NUMBER( l_value, cFmt_Money, 'NLS_NUMERIC_CHARACTERS=''.,''' ), 2 );
 
    END to_Money;
 
