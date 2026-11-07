@@ -213,6 +213,54 @@ BEGIN
       'warn row must pass when min level = wrn'
    );
 
+
+   /*
+      FATAL является отдельным уровнем фильтрации.
+      Пока MI_LOG v1 хранит его физически как LEVEL_CODE='err'.
+   */
+   MI_Logger.set_Min_Level(MI_Logger.LEVEL_FATAL);
+
+   l_message := msg('filtered-error');
+
+   MI_Logger.error(
+      p_logger_name  => c_logger,
+      p_message_text => l_message,
+      p_wsp_id       => l_wsp_id,
+      p_inf_id       => l_inf_id
+   );
+
+   assert_True(
+      log_Count(l_message) = 0,
+      'error row must be filtered when min level = fatal'
+   );
+
+
+   l_message := msg('allowed-fatal');
+
+   MI_Logger.fatal(
+      p_logger_name  => c_logger,
+      p_message_text => l_message,
+      p_wsp_id       => l_wsp_id,
+      p_inf_id       => l_inf_id
+   );
+
+   assert_True(
+      log_Count(l_message) = 1,
+      'fatal row must pass when min level = fatal'
+   );
+
+   SELECT level_code
+     INTO l_level_code
+     FROM MI_LOG
+    WHERE logger_name  = c_logger
+      AND message_text = l_message;
+
+   assert_Equals(
+      l_level_code,
+      'err',
+      'fatal physical LEVEL_CODE'
+   );
+
    DBMS_OUTPUT.put_line('   OK');
 
 
