@@ -76,8 +76,8 @@ DECLARE
 BEGIN
    SELECT wsp_id,
           length(note)
-     INTO l_id,
-          l_len
+     INTO STRICT l_id,
+                 l_len
      FROM xxi.mi_wsp
     WHERE note IS NOT NULL
       AND length(note) > 500
@@ -103,8 +103,8 @@ DECLARE
 BEGIN
    SELECT inf_id,
           length(note)
-     INTO l_id,
-          l_len
+     INTO STRICT l_id,
+                 l_len
      FROM xxi.mi_inf
     WHERE note IS NOT NULL
       AND length(note) > 500
