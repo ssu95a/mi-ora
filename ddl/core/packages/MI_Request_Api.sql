@@ -146,6 +146,15 @@ IS
 
    cLogger CONSTANT VARCHAR2(64) := 'mi.request';
 
+   /*
+      Package-level logger хранит только стабильную идентичность пакета.
+      Контекст конкретного request всегда находится в локальном l_log.
+   */
+   g_log MI_Logger_T :=
+      MI_Logger_T(
+         p_logger_name => cLogger
+      );
+
 
    ---------------------------------------------------------------------------
    FUNCTION get_Version
@@ -434,6 +443,13 @@ IS
       l_result          MI_ResultCtx.exec_Result_t;
       l_sqlcode         PLS_INTEGER;
       l_sqlerrm         VARCHAR2(2000);
+
+      l_log             MI_Logger_T :=
+         MI_Logger_T(
+            p_logger_name    => g_log.logger_name,
+            p_inf_id         => p_inf_id,
+            p_correlation_id => p_correlation_id
+         );
    BEGIN
       IF p_inf_id IS NULL THEN
          RETURN
@@ -469,6 +485,8 @@ IS
 
       l_external_uuid  := MI_Utils.uuid_V7;
       l_correlation_id := NVL(p_correlation_id, MI_Utils.uuid_V7);
+
+      l_log.correlation_id := l_correlation_id;
 
 
       INSERT INTO MI_REQ (
@@ -513,13 +531,11 @@ IS
            INTO l_req_id;
 
 
-      MI_Logger.info(
-         p_logger_name    => cLogger,
-         p_message_text   => 'Request created',
-         p_inf_id         => p_inf_id,
-         p_req_id         => l_req_id,
-         p_correlation_id => l_correlation_id,
-         p_action_code    => 'create'
+      l_log.req_id := l_req_id;
+
+      l_log.info(
+         p_message_text => 'Request created',
+         p_action_code  => 'create'
       );
 
 
@@ -542,13 +558,10 @@ IS
          l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
 
-         MI_Logger.error(
-            p_logger_name   => cLogger,
-            p_message_text  => 'create_Request failed',
-            p_inf_id        => p_inf_id,
-            p_req_id        => l_req_id,
-            p_action_code   => 'create',
-            p_details_text  => TO_CLOB(l_sqlerrm)
+         l_log.error(
+            p_message_text => 'create_Request failed',
+            p_action_code  => 'create',
+            p_details_text => TO_CLOB(l_sqlerrm)
          );
 
          RETURN
@@ -573,6 +586,12 @@ IS
 
       l_sqlcode   PLS_INTEGER;
       l_sqlerrm   VARCHAR2(2000);
+
+      l_log       MI_Logger_T :=
+         MI_Logger_T(
+            p_logger_name => g_log.logger_name,
+            p_req_id      => p_req_id
+         );
    BEGIN
       l_note :=
          SUBSTR(
@@ -595,11 +614,10 @@ IS
 
 
       IF SQL%ROWCOUNT = 1 THEN
-         MI_Logger.info(
-            p_logger_name  => cLogger,
+         l_log.inf_id := l_inf_id;
+
+         l_log.info(
             p_message_text => 'Request taken for processing',
-            p_inf_id       => l_inf_id,
-            p_req_id       => p_req_id,
             p_action_code  => 'take_for_proc',
             p_details_text => TO_CLOB(l_note)
          );
@@ -627,10 +645,8 @@ IS
          l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
 
-         MI_Logger.error(
-            p_logger_name  => cLogger,
+         l_log.error(
             p_message_text => 'take_For_Proc failed',
-            p_req_id       => p_req_id,
             p_action_code  => 'take_for_proc',
             p_details_text => TO_CLOB(l_sqlerrm)
          );
@@ -655,6 +671,12 @@ IS
 
       l_sqlcode   PLS_INTEGER;
       l_sqlerrm   VARCHAR2(2000);
+
+      l_log       MI_Logger_T :=
+         MI_Logger_T(
+            p_logger_name => g_log.logger_name,
+            p_req_id      => p_req_id
+         );
    BEGIN
       UPDATE MI_REQ
          SET STATUS_CD = STATUS_SENT
@@ -665,11 +687,10 @@ IS
 
 
       IF SQL%ROWCOUNT = 1 THEN
-         MI_Logger.info(
-            p_logger_name  => cLogger,
+         l_log.inf_id := l_inf_id;
+
+         l_log.info(
             p_message_text => 'Request moved to SENT',
-            p_inf_id       => l_inf_id,
-            p_req_id       => p_req_id,
             p_action_code  => 'to_sent'
          );
 
@@ -696,10 +717,8 @@ IS
          l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
 
-         MI_Logger.error(
-            p_logger_name  => cLogger,
+         l_log.error(
             p_message_text => 'to_Sent failed',
-            p_req_id       => p_req_id,
             p_action_code  => 'to_sent',
             p_details_text => TO_CLOB(l_sqlerrm)
          );
@@ -724,6 +743,12 @@ IS
 
       l_sqlcode   PLS_INTEGER;
       l_sqlerrm   VARCHAR2(2000);
+
+      l_log       MI_Logger_T :=
+         MI_Logger_T(
+            p_logger_name => g_log.logger_name,
+            p_req_id      => p_req_id
+         );
    BEGIN
       UPDATE MI_REQ
          SET STATUS_CD = STATUS_DONE
@@ -734,11 +759,10 @@ IS
 
 
       IF SQL%ROWCOUNT = 1 THEN
-         MI_Logger.info(
-            p_logger_name  => cLogger,
+         l_log.inf_id := l_inf_id;
+
+         l_log.info(
             p_message_text => 'Request moved to DONE',
-            p_inf_id       => l_inf_id,
-            p_req_id       => p_req_id,
             p_action_code  => 'to_success'
          );
 
@@ -765,10 +789,8 @@ IS
          l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
 
-         MI_Logger.error(
-            p_logger_name  => cLogger,
+         l_log.error(
             p_message_text => 'to_Success failed',
-            p_req_id       => p_req_id,
             p_action_code  => 'to_success',
             p_details_text => TO_CLOB(l_sqlerrm)
          );
@@ -793,6 +815,12 @@ IS
 
       l_sqlcode   PLS_INTEGER;
       l_sqlerrm   VARCHAR2(2000);
+
+      l_log       MI_Logger_T :=
+         MI_Logger_T(
+            p_logger_name => g_log.logger_name,
+            p_req_id      => p_req_id
+         );
    BEGIN
       UPDATE MI_REQ
          SET STATUS_CD = STATUS_ERROR
@@ -803,11 +831,10 @@ IS
 
 
       IF SQL%ROWCOUNT = 1 THEN
-         MI_Logger.info(
-            p_logger_name  => cLogger,
+         l_log.inf_id := l_inf_id;
+
+         l_log.info(
             p_message_text => 'Request moved to ERROR',
-            p_inf_id       => l_inf_id,
-            p_req_id       => p_req_id,
             p_action_code  => 'to_error'
          );
 
@@ -834,10 +861,8 @@ IS
          l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
 
-         MI_Logger.error(
-            p_logger_name  => cLogger,
+         l_log.error(
             p_message_text => 'to_Error failed',
-            p_req_id       => p_req_id,
             p_action_code  => 'to_error',
             p_details_text => TO_CLOB(l_sqlerrm)
          );
@@ -865,6 +890,12 @@ IS
 
       l_sqlcode     PLS_INTEGER;
       l_sqlerrm     VARCHAR2(2000);
+
+      l_log         MI_Logger_T :=
+         MI_Logger_T(
+            p_logger_name => g_log.logger_name,
+            p_req_id      => p_req_id
+         );
    BEGIN
       l_note :=
          SUBSTR(
@@ -887,11 +918,10 @@ IS
 
 
       IF SQL%ROWCOUNT = 1 THEN
-         MI_Logger.info(
-            p_logger_name  => cLogger,
+         l_log.inf_id := l_inf_id;
+
+         l_log.info(
             p_message_text => 'Request reset to NEW',
-            p_inf_id       => l_inf_id,
-            p_req_id       => p_req_id,
             p_action_code  => 'reset',
             p_details_text => TO_CLOB(l_note)
          );
@@ -955,10 +985,8 @@ IS
          l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
 
-         MI_Logger.error(
-            p_logger_name  => cLogger,
+         l_log.error(
             p_message_text => 'reset failed',
-            p_req_id       => p_req_id,
             p_action_code  => 'reset',
             p_details_text => TO_CLOB(l_sqlerrm)
          );

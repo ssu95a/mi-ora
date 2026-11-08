@@ -21,6 +21,10 @@ DECLARE
    l_idsmr         MI_REQ.IDSMR%TYPE;
    l_note          MI_REQ.NOTE%TYPE;
 
+   l_log_wsp_id    MI_LOG.WSP_ID%TYPE;
+   l_log_inf_id    MI_LOG.INF_ID%TYPE;
+   l_log_corr_id   MI_LOG.CORRELATION_ID%TYPE;
+
    l_result        MI_ResultCtx.exec_Result_t;
 
    l_count         PLS_INTEGER;
@@ -117,6 +121,10 @@ DECLARE
 
 
 BEGIN
+   MI_Logger.enable_Log;
+   MI_Logger.set_Min_Level(MI_Logger.LEVEL_INFO);
+
+
    ---------------------------------------------------------------------------
    BEGIN
       SELECT inf_id,
@@ -430,7 +438,51 @@ BEGIN
 
 
    ---------------------------------------------------------------------------
-   DBMS_OUTPUT.put_line('9. API does not commit caller transaction');
+   DBMS_OUTPUT.put_line('9. MI_Logger_T propagates request context');
+
+   SELECT COUNT(*)
+     INTO l_count
+     FROM MI_LOG
+    WHERE LOGGER_NAME = 'mi.request'
+      AND REQ_ID      = l_req_id
+      AND ACTION_CODE IN (
+             'create',
+             'take_for_proc',
+             'to_sent',
+             'to_success'
+          );
+
+   assert_True(
+      l_count = 4,
+      'expected 4 lifecycle log rows, got ' || l_count
+   );
+
+   SELECT WSP_ID,
+          INF_ID,
+          CORRELATION_ID
+     INTO l_log_wsp_id,
+          l_log_inf_id,
+          l_log_corr_id
+     FROM MI_LOG
+    WHERE LOGGER_NAME  = 'mi.request'
+      AND REQ_ID       = l_req_id
+      AND ACTION_CODE  = 'create'
+      AND MESSAGE_TEXT = 'Request created';
+
+   assert_True(l_log_wsp_id = l_wsp_id, 'log WSP_ID mismatch');
+   assert_True(l_log_inf_id = l_inf_id, 'log INF_ID mismatch');
+
+   assert_Equals(
+      l_log_corr_id,
+      l_corr_id,
+      'log CORRELATION_ID mismatch'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('10. API does not commit caller transaction');
 
    ROLLBACK TO before_request_smoke;
 
