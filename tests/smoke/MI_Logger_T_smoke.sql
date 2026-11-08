@@ -3,7 +3,7 @@ SET FEEDBACK ON
 SET VERIFY OFF
 
 PROMPT ============================================================
-PROMPT MI_Log object wrapper smoke test
+PROMPT MI_Logger_T object wrapper smoke test
 PROMPT ============================================================
 
 DECLARE
@@ -12,8 +12,8 @@ DECLARE
    l_run_id          VARCHAR2(32) := LOWER(RAWTOHEX(SYS_GUID()));
    l_message         VARCHAR2(2000);
 
-   l_log             MI_Log;
-   l_context_log     MI_Log;
+   l_log             MI_Logger_T;
+   l_context_log     MI_Logger_T;
 
    l_req_id          MI_REQ.REQ_ID%TYPE;
    l_req_inf_id      MI_REQ.INF_ID%TYPE;
@@ -48,7 +48,7 @@ DECLARE
    BEGIN
       RAISE_APPLICATION_ERROR(
          -20990,
-         'MI_Log smoke test failed: ' || p_message
+         'MI_Logger_T smoke test failed: ' || p_message
       );
    END fail;
 
@@ -98,7 +98,7 @@ DECLARE
    IS
    BEGIN
       RETURN
-         'MI_LOG_OBJECT_SMOKE/'
+         'MI_LOGGER_T_SMOKE/'
          || l_run_id
          || '/'
          || p_suffix;
@@ -131,7 +131,7 @@ BEGIN
    ---------------------------------------------------------------------------
    DBMS_OUTPUT.put_line('1. construct wrapper and write through info()');
 
-   l_log := MI_Log(c_logger);
+   l_log := MI_Logger_T(c_logger);
 
    assert_Equals(l_log.logger_name, c_logger, 'LOGGER_NAME attribute');
    assert_True(l_log.req_id IS NULL, 'REQ_ID must be NULL');
@@ -183,13 +183,13 @@ BEGIN
      FROM MI_LOG
     WHERE LOGGER_NAME = c_logger
       AND MESSAGE_TEXT IN (
-             'MI_LOG_OBJECT_SMOKE/' || l_run_id || '/direct',
-             'MI_LOG_OBJECT_SMOKE/' || l_run_id || '/trace',
-             'MI_LOG_OBJECT_SMOKE/' || l_run_id || '/debug',
-             'MI_LOG_OBJECT_SMOKE/' || l_run_id || '/info',
-             'MI_LOG_OBJECT_SMOKE/' || l_run_id || '/warn',
-             'MI_LOG_OBJECT_SMOKE/' || l_run_id || '/error',
-             'MI_LOG_OBJECT_SMOKE/' || l_run_id || '/fatal'
+             'MI_LOGGER_T_SMOKE/' || l_run_id || '/direct',
+             'MI_LOGGER_T_SMOKE/' || l_run_id || '/trace',
+             'MI_LOGGER_T_SMOKE/' || l_run_id || '/debug',
+             'MI_LOGGER_T_SMOKE/' || l_run_id || '/info',
+             'MI_LOGGER_T_SMOKE/' || l_run_id || '/warn',
+             'MI_LOGGER_T_SMOKE/' || l_run_id || '/error',
+             'MI_LOGGER_T_SMOKE/' || l_run_id || '/fatal'
           );
 
    assert_True(l_count = 7, 'expected 7 level rows, got ' || l_count);
@@ -199,7 +199,7 @@ BEGIN
      FROM MI_LOG
     WHERE LOGGER_NAME  = c_logger
       AND MESSAGE_TEXT =
-             'MI_LOG_OBJECT_SMOKE/' || l_run_id || '/fatal';
+             'MI_LOGGER_T_SMOKE/' || l_run_id || '/fatal';
 
    assert_Equals(l_level_code, 'err', 'fatal physical LEVEL_CODE');
 
@@ -264,7 +264,7 @@ BEGIN
    DBMS_OUTPUT.put_line('4. explicit context propagation');
 
    l_log :=
-      MI_Log(
+      MI_Logger_T(
          p_logger_name    => c_logger,
          p_wsp_id         => 101,
          p_inf_id         => 102,
@@ -322,7 +322,7 @@ BEGIN
 
    MI_Logger.set_Min_Level(MI_Logger.LEVEL_WARN);
 
-   l_log := MI_Log(c_logger);
+   l_log := MI_Logger_T(c_logger);
 
    l_log.debug(msg('filtered-debug'));
    l_log.warn(msg('allowed-warn'));
@@ -384,7 +384,7 @@ BEGIN
       assert_True(SQL%ROWCOUNT = 1, 'test MI_REQ row was not updated');
 
       l_context_log :=
-         MI_Log(
+         MI_Logger_T(
             p_logger_name => c_logger,
             p_req_id      => l_req_id
          );
@@ -437,7 +437,7 @@ BEGIN
    DBMS_OUTPUT.put_line('7. wrapper preserves logger failure isolation');
 
    l_log :=
-      MI_Log(
+      MI_Logger_T(
          p_logger_name => c_logger,
          p_icusnum     => 99999999999999999999
       );
@@ -455,7 +455,7 @@ BEGIN
       Invalid event level must also remain harmless. The SQL object contract
       uses INTEGER, while MI_Logger validates its package subtype internally.
    */
-   l_log := MI_Log(c_logger);
+   l_log := MI_Logger_T(c_logger);
    l_log.log(999, msg('invalid-level'));
 
    assert_True(
@@ -472,7 +472,7 @@ BEGIN
 
    DBMS_OUTPUT.put_line('');
    DBMS_OUTPUT.put_line('============================================================');
-   DBMS_OUTPUT.put_line('MI_Log object wrapper smoke test PASSED');
+   DBMS_OUTPUT.put_line('MI_Logger_T object wrapper smoke test PASSED');
    DBMS_OUTPUT.put_line('============================================================');
 
 EXCEPTION

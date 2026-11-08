@@ -1,4 +1,4 @@
-CREATE OR REPLACE TYPE MI_Log AS OBJECT
+CREATE OR REPLACE TYPE MI_Logger_T AS OBJECT
 (
    /*
       Lightweight contextual wrapper над MI_Logger core.
@@ -22,7 +22,7 @@ CREATE OR REPLACE TYPE MI_Log AS OBJECT
    icusnum         NUMBER,
 
 
-   CONSTRUCTOR FUNCTION MI_Log (
+   CONSTRUCTOR FUNCTION MI_Logger_T (
       p_logger_name     IN VARCHAR2,
 
       p_wsp_id          IN NUMBER   DEFAULT NULL,
@@ -133,11 +133,11 @@ CREATE OR REPLACE TYPE MI_Log AS OBJECT
 );
 /
 
-CREATE OR REPLACE TYPE BODY MI_Log
+CREATE OR REPLACE TYPE BODY MI_Logger_T
 IS
 
    ---------------------------------------------------------------------------
-   CONSTRUCTOR FUNCTION MI_Log (
+   CONSTRUCTOR FUNCTION MI_Logger_T (
       p_logger_name     IN VARCHAR2,
 
       p_wsp_id          IN NUMBER   DEFAULT NULL,
@@ -170,7 +170,7 @@ IS
       SELF.icusnum        := p_icusnum;
 
       RETURN;
-   END MI_Log;
+   END MI_Logger_T;
 
 
    ---------------------------------------------------------------------------
