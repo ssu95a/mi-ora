@@ -100,12 +100,13 @@ IS
 
 
    /*
-      Package-level logger содержит только стабильную идентичность пакета.
-      Контекст конкретной операции всегда находится в локальном l_log.
+      Package-level constant хранит стабильную идентичность пакета.
+      Контекст операции задаётся только в локальной value-copy l_log.
    */
-   g_log MI_Logger_T :=
+   g_log CONSTANT MI_Logger_T :=
       MI_Logger_T(
-         p_logger_name => cLogger
+         p_logger_name  => cLogger,
+         p_package_name => 'MI_Person_Api'
       );
 
 
@@ -775,13 +776,13 @@ IS
       l_sqlcode     PLS_INTEGER;
       l_sqlerrm     VARCHAR2(2000);
 
-      l_log         MI_Logger_T :=
-         MI_Logger_T(
-            p_logger_name => g_log.logger_name,
-            p_inf_id      => p_inf_id,
-            p_icusnum     => p_default_icusnum
-         );
+      l_log         MI_Logger_T := g_log;
    BEGIN
+      l_log.context(
+         p_inf_id  => p_inf_id,
+         p_icusnum => p_default_icusnum
+      );
+
       IF p_inf_id IS NULL THEN
          RETURN
             failure_Result(
@@ -852,7 +853,10 @@ IS
       END;
 
 
-      l_log.icusnum := l_person.icusnum;
+      l_log.context(
+         p_inf_id  => p_inf_id,
+         p_icusnum => l_person.icusnum
+      );
 
       l_person_id :=
          find_Person_Id(
@@ -881,7 +885,11 @@ IS
       END IF;
 
 
-      l_log.person_id := l_person_id;
+      l_log.context(
+         p_inf_id    => p_inf_id,
+         p_person_id => l_person_id,
+         p_icusnum   => l_person.icusnum
+      );
 
       link_Person_To_Inf(
          p_person_id => l_person_id,
@@ -945,7 +953,11 @@ IS
             END IF;
          END IF;
 
-         l_log.person_id := l_person_id;
+         l_log.context(
+            p_inf_id    => p_inf_id,
+            p_person_id => l_person_id,
+            p_icusnum   => l_person.icusnum
+         );
 
          l_log.error(
             p_message_text => 'get_Or_Create failed',

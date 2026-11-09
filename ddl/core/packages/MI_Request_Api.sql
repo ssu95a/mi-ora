@@ -147,12 +147,13 @@ IS
    cLogger CONSTANT VARCHAR2(64) := 'mi.request';
 
    /*
-      Package-level logger хранит только стабильную идентичность пакета.
-      Контекст конкретного request всегда находится в локальном l_log.
+      Package-level constant хранит стабильную идентичность пакета.
+      Контекст request задаётся только в локальной value-copy l_log.
    */
-   g_log MI_Logger_T :=
+   g_log CONSTANT MI_Logger_T :=
       MI_Logger_T(
-         p_logger_name => cLogger
+         p_logger_name  => cLogger,
+         p_package_name => 'MI_Request_Api'
       );
 
 
@@ -444,13 +445,13 @@ IS
       l_sqlcode         PLS_INTEGER;
       l_sqlerrm         VARCHAR2(2000);
 
-      l_log             MI_Logger_T :=
-         MI_Logger_T(
-            p_logger_name    => g_log.logger_name,
-            p_inf_id         => p_inf_id,
-            p_correlation_id => p_correlation_id
-         );
+      l_log             MI_Logger_T := g_log;
    BEGIN
+      l_log.context(
+         p_inf_id         => p_inf_id,
+         p_correlation_id => p_correlation_id
+      );
+
       IF p_inf_id IS NULL THEN
          RETURN
             failure_Result(
@@ -486,7 +487,10 @@ IS
       l_external_uuid  := MI_Utils.uuid_V7;
       l_correlation_id := NVL(p_correlation_id, MI_Utils.uuid_V7);
 
-      l_log.correlation_id := l_correlation_id;
+      l_log.context(
+         p_inf_id         => p_inf_id,
+         p_correlation_id => l_correlation_id
+      );
 
 
       INSERT INTO MI_REQ (
@@ -531,7 +535,11 @@ IS
            INTO l_req_id;
 
 
-      l_log.req_id := l_req_id;
+      l_log.context(
+         p_inf_id         => p_inf_id,
+         p_req_id         => l_req_id,
+         p_correlation_id => l_correlation_id
+      );
 
       l_log.info(
          p_message_text => 'Request created',
@@ -587,12 +595,10 @@ IS
       l_sqlcode   PLS_INTEGER;
       l_sqlerrm   VARCHAR2(2000);
 
-      l_log       MI_Logger_T :=
-         MI_Logger_T(
-            p_logger_name => g_log.logger_name,
-            p_req_id      => p_req_id
-         );
+      l_log       MI_Logger_T := g_log;
    BEGIN
+      l_log.context(p_req_id => p_req_id);
+
       l_note :=
          SUBSTR(
             TRIM(NVL(p_info, ''))
@@ -614,7 +620,10 @@ IS
 
 
       IF SQL%ROWCOUNT = 1 THEN
-         l_log.inf_id := l_inf_id;
+         l_log.context(
+            p_inf_id => l_inf_id,
+            p_req_id => p_req_id
+         );
 
          l_log.info(
             p_message_text => 'Request taken for processing',
@@ -672,12 +681,10 @@ IS
       l_sqlcode   PLS_INTEGER;
       l_sqlerrm   VARCHAR2(2000);
 
-      l_log       MI_Logger_T :=
-         MI_Logger_T(
-            p_logger_name => g_log.logger_name,
-            p_req_id      => p_req_id
-         );
+      l_log       MI_Logger_T := g_log;
    BEGIN
+      l_log.context(p_req_id => p_req_id);
+
       UPDATE MI_REQ
          SET STATUS_CD = STATUS_SENT
        WHERE REQ_ID = p_req_id
@@ -687,7 +694,10 @@ IS
 
 
       IF SQL%ROWCOUNT = 1 THEN
-         l_log.inf_id := l_inf_id;
+         l_log.context(
+            p_inf_id => l_inf_id,
+            p_req_id => p_req_id
+         );
 
          l_log.info(
             p_message_text => 'Request moved to SENT',
@@ -744,12 +754,10 @@ IS
       l_sqlcode   PLS_INTEGER;
       l_sqlerrm   VARCHAR2(2000);
 
-      l_log       MI_Logger_T :=
-         MI_Logger_T(
-            p_logger_name => g_log.logger_name,
-            p_req_id      => p_req_id
-         );
+      l_log       MI_Logger_T := g_log;
    BEGIN
+      l_log.context(p_req_id => p_req_id);
+
       UPDATE MI_REQ
          SET STATUS_CD = STATUS_DONE
        WHERE REQ_ID = p_req_id
@@ -759,7 +767,10 @@ IS
 
 
       IF SQL%ROWCOUNT = 1 THEN
-         l_log.inf_id := l_inf_id;
+         l_log.context(
+            p_inf_id => l_inf_id,
+            p_req_id => p_req_id
+         );
 
          l_log.info(
             p_message_text => 'Request moved to DONE',
@@ -816,12 +827,10 @@ IS
       l_sqlcode   PLS_INTEGER;
       l_sqlerrm   VARCHAR2(2000);
 
-      l_log       MI_Logger_T :=
-         MI_Logger_T(
-            p_logger_name => g_log.logger_name,
-            p_req_id      => p_req_id
-         );
+      l_log       MI_Logger_T := g_log;
    BEGIN
+      l_log.context(p_req_id => p_req_id);
+
       UPDATE MI_REQ
          SET STATUS_CD = STATUS_ERROR
        WHERE REQ_ID = p_req_id
@@ -831,7 +840,10 @@ IS
 
 
       IF SQL%ROWCOUNT = 1 THEN
-         l_log.inf_id := l_inf_id;
+         l_log.context(
+            p_inf_id => l_inf_id,
+            p_req_id => p_req_id
+         );
 
          l_log.info(
             p_message_text => 'Request moved to ERROR',
@@ -891,12 +903,10 @@ IS
       l_sqlcode     PLS_INTEGER;
       l_sqlerrm     VARCHAR2(2000);
 
-      l_log         MI_Logger_T :=
-         MI_Logger_T(
-            p_logger_name => g_log.logger_name,
-            p_req_id      => p_req_id
-         );
+      l_log         MI_Logger_T := g_log;
    BEGIN
+      l_log.context(p_req_id => p_req_id);
+
       l_note :=
          SUBSTR(
             TRIM(NVL(p_info, ''))
@@ -918,7 +928,10 @@ IS
 
 
       IF SQL%ROWCOUNT = 1 THEN
-         l_log.inf_id := l_inf_id;
+         l_log.context(
+            p_inf_id => l_inf_id,
+            p_req_id => p_req_id
+         );
 
          l_log.info(
             p_message_text => 'Request reset to NEW',
@@ -954,6 +967,11 @@ IS
                   p_req_id => p_req_id
                );
       END;
+
+      l_log.context(
+         p_inf_id => l_inf_id,
+         p_req_id => p_req_id
+      );
 
 
       /*

@@ -7,7 +7,8 @@ PROMPT MI_Logger_T object wrapper smoke test
 PROMPT ============================================================
 
 DECLARE
-   c_logger CONSTANT VARCHAR2(64) := 'mi.log.object.smoke';
+   c_logger  CONSTANT VARCHAR2(64) := 'mi.log.object.smoke';
+   c_package CONSTANT VARCHAR2(50) := 'MI_Logger_T_smoke';
 
    l_run_id          VARCHAR2(32) := LOWER(RAWTOHEX(SYS_GUID()));
    l_message         VARCHAR2(2000);
@@ -131,10 +132,11 @@ BEGIN
    ---------------------------------------------------------------------------
    DBMS_OUTPUT.put_line('1. construct wrapper and write through info()');
 
-   l_log := MI_Logger_T(c_logger);
-
-   assert_Equals(l_log.logger_name, c_logger, 'LOGGER_NAME attribute');
-   assert_True(l_log.req_id IS NULL, 'REQ_ID must be NULL');
+   l_log :=
+      MI_Logger_T(
+         p_logger_name  => c_logger,
+         p_package_name => c_package
+      );
 
    l_message := msg('basic-info');
 
@@ -257,6 +259,16 @@ BEGIN
       'expected 6 diagnostic helper rows, got ' || l_count
    );
 
+   assert_True(
+      log_Count(c_package || '.smoke_proc: ' || msg('enter')) = 1,
+      'enter_f did not qualify function with PACKAGE_NAME'
+   );
+
+   assert_True(
+      log_Count(c_package || '.smoke_proc: ' || msg('exit')) = 1,
+      'exit_f did not qualify function with PACKAGE_NAME'
+   );
+
    DBMS_OUTPUT.put_line('   OK');
 
 
@@ -265,16 +277,20 @@ BEGIN
 
    l_log :=
       MI_Logger_T(
-         p_logger_name    => c_logger,
-         p_wsp_id         => 101,
-         p_inf_id         => 102,
-         p_req_id         => 103,
-         p_itm_id         => 104,
-         p_rsp_id         => 105,
-         p_correlation_id => '019a6325-4000-7000-8000-000000000001',
-         p_person_id      => 106,
-         p_icusnum        => 107
+         p_logger_name  => c_logger,
+         p_package_name => c_package,
+         p_wsp_id       => 101
       );
+
+   l_log.context(
+      p_inf_id         => 102,
+      p_req_id         => 103,
+      p_itm_id         => 104,
+      p_rsp_id         => 105,
+      p_correlation_id => '019a6325-4000-7000-8000-000000000001',
+      p_person_id      => 106,
+      p_icusnum        => 107
+   );
 
    l_message := msg('explicit-context');
    l_log.info(l_message);
@@ -314,6 +330,76 @@ BEGIN
    assert_True(l_log_person_id = 106, 'explicit PERSON_ID');
    assert_True(l_log_icusnum = 107, 'explicit ICUSNUM');
 
+
+   l_log.context(p_req_id => -108);
+
+   l_message := msg('replaced-context');
+   l_log.info(l_message);
+
+   SELECT WSP_ID,
+          INF_ID,
+          REQ_ID,
+          ITM_ID,
+          RSP_ID,
+          CORRELATION_ID,
+          PERSON_ID,
+          ICUSNUM
+     INTO l_log_wsp_id,
+          l_log_inf_id,
+          l_log_req_id,
+          l_log_itm_id,
+          l_log_rsp_id,
+          l_log_corr,
+          l_log_person_id,
+          l_log_icusnum
+     FROM MI_LOG
+    WHERE LOGGER_NAME  = c_logger
+      AND MESSAGE_TEXT = l_message;
+
+   assert_True(l_log_wsp_id = 101, 'context changed WSP_ID');
+   assert_True(l_log_inf_id IS NULL, 'context default INF_ID');
+   assert_True(l_log_req_id = -108, 'context REQ_ID');
+   assert_True(l_log_itm_id IS NULL, 'context default ITM_ID');
+   assert_True(l_log_rsp_id IS NULL, 'context default RSP_ID');
+   assert_True(l_log_corr IS NULL, 'context default CORRELATION_ID');
+   assert_True(l_log_person_id IS NULL, 'context default PERSON_ID');
+   assert_True(l_log_icusnum IS NULL, 'context default ICUSNUM');
+
+
+   l_log.clear_Context;
+
+   l_message := msg('cleared-context');
+   l_log.info(l_message);
+
+   SELECT WSP_ID,
+          INF_ID,
+          REQ_ID,
+          ITM_ID,
+          RSP_ID,
+          CORRELATION_ID,
+          PERSON_ID,
+          ICUSNUM
+     INTO l_log_wsp_id,
+          l_log_inf_id,
+          l_log_req_id,
+          l_log_itm_id,
+          l_log_rsp_id,
+          l_log_corr,
+          l_log_person_id,
+          l_log_icusnum
+     FROM MI_LOG
+    WHERE LOGGER_NAME  = c_logger
+      AND MESSAGE_TEXT = l_message;
+
+   assert_True(l_log_wsp_id = 101, 'clear_Context changed WSP_ID');
+   assert_True(l_log_inf_id IS NULL, 'clear_Context INF_ID');
+   assert_True(l_log_req_id IS NULL, 'clear_Context REQ_ID');
+   assert_True(l_log_itm_id IS NULL, 'clear_Context ITM_ID');
+   assert_True(l_log_rsp_id IS NULL, 'clear_Context RSP_ID');
+   assert_True(l_log_corr IS NULL, 'clear_Context CORRELATION_ID');
+   assert_True(l_log_person_id IS NULL, 'clear_Context PERSON_ID');
+   assert_True(l_log_icusnum IS NULL, 'clear_Context ICUSNUM');
+
    DBMS_OUTPUT.put_line('   OK');
 
 
@@ -322,7 +408,11 @@ BEGIN
 
    MI_Logger.set_Min_Level(MI_Logger.LEVEL_WARN);
 
-   l_log := MI_Logger_T(c_logger);
+   l_log :=
+      MI_Logger_T(
+         p_logger_name  => c_logger,
+         p_package_name => c_package
+      );
 
    l_log.debug(msg('filtered-debug'));
    l_log.warn(msg('allowed-warn'));
@@ -385,9 +475,11 @@ BEGIN
 
       l_context_log :=
          MI_Logger_T(
-            p_logger_name => c_logger,
-            p_req_id      => l_req_id
+            p_logger_name  => c_logger,
+            p_package_name => c_package
          );
+
+      l_context_log.context(p_req_id => l_req_id);
 
       l_message := msg('resolve-uncommitted');
       l_context_log.info(l_message);
@@ -438,9 +530,11 @@ BEGIN
 
    l_log :=
       MI_Logger_T(
-         p_logger_name => c_logger,
-         p_icusnum     => 99999999999999999999
+         p_logger_name  => c_logger,
+         p_package_name => c_package
       );
+
+   l_log.context(p_icusnum => 99999999999999999999);
 
    l_message := msg('internal-failure');
    l_log.error(l_message);
@@ -455,7 +549,11 @@ BEGIN
       Invalid event level must also remain harmless. The SQL object contract
       uses INTEGER, while MI_Logger validates its package subtype internally.
    */
-   l_log := MI_Logger_T(c_logger);
+   l_log :=
+      MI_Logger_T(
+         p_logger_name  => c_logger,
+         p_package_name => c_package
+      );
    l_log.log(999, msg('invalid-level'));
 
    assert_True(

@@ -104,12 +104,13 @@ IS
 
 
    /*
-      Package-level logger хранит только стабильную идентичность пакета.
-      Контекст конкретного request/item всегда находится в локальном l_log.
+      Package-level constant хранит стабильную идентичность пакета.
+      Контекст request/item задаётся только в локальной value-copy l_log.
    */
-   g_log MI_Logger_T :=
+   g_log CONSTANT MI_Logger_T :=
       MI_Logger_T(
-         p_logger_name => cLogger
+         p_logger_name  => cLogger,
+         p_package_name => 'MI_Item_Result_Api'
       );
 
 
@@ -316,10 +317,7 @@ IS
       l_sqlerrm            VARCHAR2(2000);
       l_savepoint_name     DCL.T_Name;
 
-      l_log                MI_Logger_T :=
-         MI_Logger_T(
-            p_logger_name => g_log.logger_name
-         );
+      l_log                MI_Logger_T := g_log;
 
 
       ------------------------------------------------------------------------
@@ -606,7 +604,7 @@ IS
 
 
       l_log.enter_f(
-         p_function_name => 'MI_Item_Result_Api.apply_Item_Result',
+         p_function_name => 'apply_Item_Result',
          p_message_text  =>
                'table='
             || l_item_table
@@ -651,9 +649,11 @@ IS
       END;
 
 
-      l_log.inf_id         := l_inf_id;
-      l_log.req_id         := l_req_id;
-      l_log.correlation_id := l_correlation_id;
+      l_log.context(
+         p_inf_id         => l_inf_id,
+         p_req_id         => l_req_id,
+         p_correlation_id => l_correlation_id
+      );
 
 
       IF l_status_cd NOT IN (
@@ -716,7 +716,12 @@ IS
       END;
 
 
-      l_log.itm_id := l_itm_id;
+      l_log.context(
+         p_inf_id         => l_inf_id,
+         p_req_id         => l_req_id,
+         p_itm_id         => l_itm_id,
+         p_correlation_id => l_correlation_id
+      );
 
 
       ------------------------------------------------------------------------
@@ -933,7 +938,7 @@ IS
       );
 
       l_log.exit_f(
-         p_function_name => 'MI_Item_Result_Api.apply_Item_Result',
+         p_function_name => 'apply_Item_Result',
          p_message_text  => 'Item result applied'
       );
 

@@ -1,13 +1,20 @@
-CREATE OR REPLACE TYPE MI_Logger_T AS OBJECT
+CREATE OR REPLACE TYPE MI_Logger_T FORCE AS OBJECT
 (
    /*
       Lightweight contextual wrapper над MI_Logger core.
 
-      Объект хранит только reusable correlation context. Persistence,
-      context resolution, filtering и autonomous transaction остаются
-      исключительно в MI_Logger package.
+      SQL object type не поддерживает private attributes: Oracle требует
+      объявлять все attributes в type specification и делает их публичными.
+      Поэтому encapsulation обеспечивается контрактом использования:
+
+      - package-level экземпляр объявляется только в PACKAGE BODY;
+      - logger_name, package_name и wsp_id задаются конструктором;
+      - изменяемый correlation context задаётся только через context();
+      - persistence, context resolution, filtering и autonomous transaction
+        остаются исключительно в MI_Logger package.
    */
    logger_name     VARCHAR2(64),
+   package_name    VARCHAR2(50),
 
    wsp_id          NUMBER,
    inf_id          NUMBER,
@@ -24,20 +31,28 @@ CREATE OR REPLACE TYPE MI_Logger_T AS OBJECT
 
    CONSTRUCTOR FUNCTION MI_Logger_T (
       p_logger_name     IN VARCHAR2,
+      p_package_name    IN VARCHAR2,
+      p_wsp_id          IN NUMBER DEFAULT NULL
+   )
+      RETURN SELF AS RESULT,
 
-      p_wsp_id          IN NUMBER   DEFAULT NULL,
+
+   /*
+      Полностью заменяет operation context. Неуказанные параметры становятся
+      NULL, поэтому context предыдущего вызова не может протечь в следующий.
+   */
+   MEMBER PROCEDURE context (
       p_inf_id          IN NUMBER   DEFAULT NULL,
-
       p_req_id          IN NUMBER   DEFAULT NULL,
       p_itm_id          IN NUMBER   DEFAULT NULL,
       p_rsp_id          IN NUMBER   DEFAULT NULL,
-
       p_correlation_id  IN VARCHAR2 DEFAULT NULL,
-
       p_person_id       IN NUMBER   DEFAULT NULL,
       p_icusnum         IN NUMBER   DEFAULT NULL
-   )
-      RETURN SELF AS RESULT,
+   ),
+
+
+   MEMBER PROCEDURE clear_Context,
 
 
    /*
@@ -139,25 +154,43 @@ IS
    ---------------------------------------------------------------------------
    CONSTRUCTOR FUNCTION MI_Logger_T (
       p_logger_name     IN VARCHAR2,
-
-      p_wsp_id          IN NUMBER   DEFAULT NULL,
-      p_inf_id          IN NUMBER   DEFAULT NULL,
-
-      p_req_id          IN NUMBER   DEFAULT NULL,
-      p_itm_id          IN NUMBER   DEFAULT NULL,
-      p_rsp_id          IN NUMBER   DEFAULT NULL,
-
-      p_correlation_id  IN VARCHAR2 DEFAULT NULL,
-
-      p_person_id       IN NUMBER   DEFAULT NULL,
-      p_icusnum         IN NUMBER   DEFAULT NULL
+      p_package_name    IN VARCHAR2,
+      p_wsp_id          IN NUMBER DEFAULT NULL
    )
       RETURN SELF AS RESULT
    IS
    BEGIN
       SELF.logger_name    := SUBSTR(NVL(p_logger_name, '-'), 1, 64);
+      SELF.package_name   := SUBSTR(NVL(p_package_name, '-'), 1, 50);
 
       SELF.wsp_id         := p_wsp_id;
+      SELF.inf_id         := NULL;
+
+      SELF.req_id         := NULL;
+      SELF.itm_id         := NULL;
+      SELF.rsp_id         := NULL;
+
+      SELF.correlation_id := NULL;
+
+      SELF.person_id      := NULL;
+      SELF.icusnum        := NULL;
+
+      RETURN;
+   END MI_Logger_T;
+
+
+   ---------------------------------------------------------------------------
+   MEMBER PROCEDURE context (
+      p_inf_id          IN NUMBER   DEFAULT NULL,
+      p_req_id          IN NUMBER   DEFAULT NULL,
+      p_itm_id          IN NUMBER   DEFAULT NULL,
+      p_rsp_id          IN NUMBER   DEFAULT NULL,
+      p_correlation_id  IN VARCHAR2 DEFAULT NULL,
+      p_person_id       IN NUMBER   DEFAULT NULL,
+      p_icusnum         IN NUMBER   DEFAULT NULL
+   )
+   IS
+   BEGIN
       SELF.inf_id         := p_inf_id;
 
       SELF.req_id         := p_req_id;
@@ -168,9 +201,24 @@ IS
 
       SELF.person_id      := p_person_id;
       SELF.icusnum        := p_icusnum;
+   END context;
 
-      RETURN;
-   END MI_Logger_T;
+
+   ---------------------------------------------------------------------------
+   MEMBER PROCEDURE clear_Context
+   IS
+   BEGIN
+      SELF.inf_id         := NULL;
+
+      SELF.req_id         := NULL;
+      SELF.itm_id         := NULL;
+      SELF.rsp_id         := NULL;
+
+      SELF.correlation_id := NULL;
+
+      SELF.person_id      := NULL;
+      SELF.icusnum        := NULL;
+   END clear_Context;
 
 
    ---------------------------------------------------------------------------
@@ -322,9 +370,18 @@ IS
       p_parameters     IN CLOB     DEFAULT NULL
    )
    IS
-      l_message VARCHAR2(32767);
+      l_function_name VARCHAR2(32767);
+      l_message       VARCHAR2(32767);
    BEGIN
-      l_message := NVL(p_function_name, '-');
+      l_function_name := NVL(p_function_name, '-');
+
+      IF SELF.package_name IS NOT NULL
+         AND INSTR(l_function_name, '.') = 0
+      THEN
+         l_function_name := SELF.package_name || '.' || l_function_name;
+      END IF;
+
+      l_message := l_function_name;
 
       IF p_message_text IS NOT NULL THEN
          l_message :=
@@ -349,9 +406,18 @@ IS
       p_details_text   IN CLOB     DEFAULT NULL
    )
    IS
-      l_message VARCHAR2(32767);
+      l_function_name VARCHAR2(32767);
+      l_message       VARCHAR2(32767);
    BEGIN
-      l_message := NVL(p_function_name, '-');
+      l_function_name := NVL(p_function_name, '-');
+
+      IF SELF.package_name IS NOT NULL
+         AND INSTR(l_function_name, '.') = 0
+      THEN
+         l_function_name := SELF.package_name || '.' || l_function_name;
+      END IF;
+
+      l_message := l_function_name;
 
       IF p_message_text IS NOT NULL THEN
          l_message :=
@@ -430,7 +496,7 @@ IS
       SELF.log(
          p_level        => MI_Logger.LEVEL_INFO,
          p_message_text =>
-              NVL(p_object_name, '-')
+              NVL(p_object_name, SELF.package_name)
            || ': '
            || NVL(p_version_text, '<NULL>'),
          p_action_code  => 'version'
