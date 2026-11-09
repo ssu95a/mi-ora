@@ -22,6 +22,7 @@ rem ---------------------------------------------------------------------------
 if "%~1"=="" goto :usage
 
 set "SQL_FILE=%~f1"
+for %%I in ("%~dp0..") do set "MI_REPO_ROOT=%%~fI"
 
 if not exist "%SQL_FILE%" (
    echo ERROR: SQL file not found:
@@ -186,8 +187,22 @@ rem command line. ECHO is disabled for CONNECT so the password is not printed.
    echo EXIT SUCCESS
 ) > "%RUNNER%"
 
+rem Execute SQL*Plus from the repository root. This gives nested @script.sql
+rem includes one stable base directory regardless of the caller's current
+rem directory.
+pushd "%MI_REPO_ROOT%" >nul
+if errorlevel 1 (
+   del /q "%RUNNER%" >nul 2>&1
+   if defined OLD_CP chcp %OLD_CP% >nul
+   echo ERROR: Cannot switch to repository root:
+   echo   %MI_REPO_ROOT%
+   exit /b 9
+)
+
 "%SQLPLUS%" -L /nolog @"%RUNNER%"
 set "RC=%ERRORLEVEL%"
+
+popd
 
 del /q "%RUNNER%" >nul 2>&1
 

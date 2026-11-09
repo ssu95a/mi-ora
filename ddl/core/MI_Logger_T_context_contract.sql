@@ -8,19 +8,19 @@ PROMPT ============================================================
    INVALID-object check sees a consistent schema.
 */
 
-@@types/MI_Logger_T.sql
+@ddl/core/types/MI_Logger_T.sql
 SHOW ERRORS TYPE MI_Logger_T
 SHOW ERRORS TYPE BODY MI_Logger_T
 
-@@packages/MI_Request_Api.sql
+@ddl/core/packages/MI_Request_Api.sql
 SHOW ERRORS PACKAGE MI_Request_Api
 SHOW ERRORS PACKAGE BODY MI_Request_Api
 
-@@packages/MI_Person_Api.sql
+@ddl/core/packages/MI_Person_Api.sql
 SHOW ERRORS PACKAGE MI_Person_Api
 SHOW ERRORS PACKAGE BODY MI_Person_Api
 
-@@packages/MI_Item_Result_Api.sql
+@ddl/core/packages/MI_Item_Result_Api.sql
 SHOW ERRORS PACKAGE MI_Item_Result_Api
 SHOW ERRORS PACKAGE BODY MI_Item_Result_Api
 
