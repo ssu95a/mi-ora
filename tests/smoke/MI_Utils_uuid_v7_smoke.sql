@@ -3,7 +3,7 @@ SET FEEDBACK ON
 SET VERIFY OFF
 
 PROMPT ============================================================
-PROMPT MI_Utils UUIDv7 smoke test
+PROMPT MI_Utils UUID / SQL identifier smoke test
 PROMPT ============================================================
 
 DECLARE
@@ -16,6 +16,9 @@ DECLARE
    l_now_ms      NUMBER;
    l_prev_ts_ms  NUMBER;
 
+   l_sql_name       VARCHAR2(30);
+   l_invalid_caught BOOLEAN;
+
 
    PROCEDURE fail (
       p_message IN VARCHAR2
@@ -24,7 +27,7 @@ DECLARE
    BEGIN
       RAISE_APPLICATION_ERROR(
          -20990,
-         'MI_Utils UUIDv7 smoke test failed: ' || p_message
+         'MI_Utils smoke test failed: ' || p_message
       );
    END fail;
 
@@ -225,9 +228,80 @@ BEGIN
    DBMS_OUTPUT.put_line('   OK');
 
 
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('4. generic UUID validation');
+
+   assert_True(
+      MI_Utils.is_Uuid(l_uuid),
+      'generated UUID was rejected'
+   );
+
+   assert_True(
+      MI_Utils.is_Uuid(UPPER(l_uuid)),
+      'uppercase UUID was rejected'
+   );
+
+   assert_True(
+      MI_Utils.is_Uuid('550e8400-e29b-41d4-a716-446655440000'),
+      'valid non-v7 UUID was rejected'
+   );
+
+   assert_True(
+      NOT MI_Utils.is_Uuid(NULL),
+      'NULL must not be a UUID'
+   );
+
+   assert_True(
+      NOT MI_Utils.is_Uuid('not-a-uuid'),
+      'invalid UUID was accepted'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('5. simple SQL identifier validation');
+
+   l_sql_name :=
+      MI_Utils.simple_Sql_Name(
+         p_value => ' mi_0007 ',
+         p_kind  => 'smoke identifier'
+      );
+
+   assert_True(
+      l_sql_name = 'MI_0007',
+      'identifier was not trimmed and normalized'
+   );
+
+   l_invalid_caught := FALSE;
+
+   BEGIN
+      l_sql_name :=
+         MI_Utils.simple_Sql_Name(
+            p_value => 'MI_0007;DELETE',
+            p_kind  => 'smoke identifier'
+         );
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         IF SQLCODE = -20010 THEN
+            l_invalid_caught := TRUE;
+         ELSE
+            RAISE;
+         END IF;
+   END;
+
+   assert_True(
+      l_invalid_caught,
+      'unsafe identifier was accepted'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
    DBMS_OUTPUT.put_line('');
    DBMS_OUTPUT.put_line('============================================================');
-   DBMS_OUTPUT.put_line('MI_Utils UUIDv7 smoke test PASSED');
+   DBMS_OUTPUT.put_line('MI_Utils UUID / SQL identifier smoke test PASSED');
    DBMS_OUTPUT.put_line('============================================================');
 END;
 /

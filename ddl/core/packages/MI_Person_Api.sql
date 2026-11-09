@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_Person_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.0.0} {08.11.2026} Sulimoff$';
+      '$Id: {1.0.1} {09.11.2026} Sulimoff$';
 
 
    FUNCTION get_Version
@@ -45,8 +45,9 @@ IS
       Для остальных видов сведений, а также при неполном matching profile,
       всегда создаётся новая person. Бизнес-дубли разрешены контрактом.
 
-      Функция не выполняет COMMIT. При технической ошибке откатываются
-      только её собственные DML после внутреннего savepoint.
+      Функция не выполняет COMMIT. В штатном DCL transaction mode при
+      технической ошибке откатываются только её собственные DML.
+      Вызов из trigger обрабатывается согласно общему DCL contract.
 
       p_person_json — JSON object с именами полей MI_PERSON в lowercase.
       PERSON_ID и CREATED_AT из JSON не используются.
@@ -764,9 +765,11 @@ IS
       l_person_id   MI_PERSON.PERSON_ID%TYPE;
       l_profile     VARCHAR2(30);
 
-      l_created     BOOLEAN := FALSE;
-      l_linked      BOOLEAN := FALSE;
-      l_dml_started BOOLEAN := FALSE;
+      l_created        BOOLEAN := FALSE;
+      l_linked         BOOLEAN := FALSE;
+      l_dml_started    BOOLEAN := FALSE;
+      l_savepoint_name DCL.T_Name;
+      l_rolled_back    BOOLEAN;
 
       l_result      MI_ResultCtx.exec_Result_t;
       l_sqlcode     PLS_INTEGER;
@@ -868,7 +871,7 @@ IS
       );
 
 
-      SAVEPOINT MI_PERSON_API_GOC_DML;
+      DCL.SavePoint(l_savepoint_name);
       l_dml_started := TRUE;
 
 
@@ -931,7 +934,15 @@ IS
          l_sqlerrm := SQLERRM;
 
          IF l_dml_started THEN
-            ROLLBACK TO MI_PERSON_API_GOC_DML;
+            l_dml_started := FALSE;
+            l_rolled_back := DCL.RollBack(l_savepoint_name);
+
+            IF NOT l_rolled_back THEN
+               l_log.warn(
+                  p_message_text => 'DCL rollback was not performed',
+                  p_action_code  => 'rollback_skipped'
+               );
+            END IF;
          END IF;
 
          l_log.person_id := l_person_id;

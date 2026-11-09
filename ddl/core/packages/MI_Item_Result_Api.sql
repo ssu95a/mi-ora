@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_Item_Result_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.0.0} {09.11.2026} Sulimoff$';
+      '$Id: {1.0.1} {09.11.2026} Sulimoff$';
 
 
    /*
@@ -71,6 +71,8 @@ IS
                                failure/conflict.
 
       Package не выполняет COMMIT. Транзакцией управляет вызывающая сторона.
+      Локальный rollback выполняется только через DCL.SavePoint/RollBack;
+      поведение при вызове из trigger определяется общим DCL contract.
    */
    FUNCTION apply_Item_Result (
       p_item_table        IN VARCHAR2,
@@ -121,52 +123,6 @@ IS
 
 
    ---------------------------------------------------------------------------
-   FUNCTION is_Uuid (
-      p_value IN VARCHAR2
-   )
-      RETURN BOOLEAN
-   IS
-   BEGIN
-      RETURN
-         REGEXP_LIKE(
-            TRIM(p_value),
-            '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
-         );
-   END is_Uuid;
-
-
-   ---------------------------------------------------------------------------
-   FUNCTION simple_Sql_Name (
-      p_value IN VARCHAR2,
-      p_kind  IN VARCHAR2
-   )
-      RETURN VARCHAR2
-   IS
-      l_value VARCHAR2(128);
-   BEGIN
-      l_value := UPPER(TRIM(p_value));
-
-      /*
-         Oracle 12.1 identifiers are limited to 30 bytes. Quoted names and
-         schema prefixes are deliberately excluded from this internal API.
-      */
-      IF l_value IS NULL
-         OR NOT REGEXP_LIKE(
-                   l_value,
-                   '^[A-Z][A-Z0-9_$#]{0,29}$'
-                )
-      THEN
-         RAISE_APPLICATION_ERROR(
-            -20010,
-            'Invalid ' || p_kind || ': ' || NVL(p_value, '<NULL>')
-         );
-      END IF;
-
-      RETURN DBMS_ASSERT.simple_sql_name(l_value);
-   END simple_Sql_Name;
-
-
-   ---------------------------------------------------------------------------
    FUNCTION mapper_Name (
       p_value IN VARCHAR2
    )
@@ -192,13 +148,13 @@ IS
       END IF;
 
       l_package :=
-         simple_Sql_Name(
+         MI_Utils.simple_Sql_Name(
             p_value => SUBSTR(l_value, 1, l_dot_pos - 1),
             p_kind  => 'mapper package'
          );
 
       l_procedure :=
-         simple_Sql_Name(
+         MI_Utils.simple_Sql_Name(
             p_value => SUBSTR(l_value, l_dot_pos + 1),
             p_kind  => 'mapper procedure'
          );
@@ -358,7 +314,7 @@ IS
 
       l_sqlcode            PLS_INTEGER;
       l_sqlerrm            VARCHAR2(2000);
-      l_savepoint_set      BOOLEAN := FALSE;
+      l_savepoint_name     DCL.T_Name;
 
       l_log                MI_Logger_T :=
          MI_Logger_T(
@@ -369,10 +325,25 @@ IS
       ------------------------------------------------------------------------
       PROCEDURE rollback_Own_Work
       IS
+         l_name         DCL.T_Name;
+         l_rolled_back  BOOLEAN;
       BEGIN
-         IF l_savepoint_set THEN
-            l_savepoint_set := FALSE;
-            ROLLBACK TO MI_ITEM_RESULT_APPLY_DML;
+         IF l_savepoint_name IS NOT NULL THEN
+            /*
+               Clear first so a DCL error cannot cause a second rollback
+               attempt in the outer exception handler.
+            */
+            l_name           := l_savepoint_name;
+            l_savepoint_name := NULL;
+
+            l_rolled_back := DCL.RollBack(l_name);
+
+            IF NOT l_rolled_back THEN
+               l_log.warn(
+                  p_message_text => 'DCL rollback was not performed',
+                  p_action_code  => 'rollback_skipped'
+               );
+            END IF;
          END IF;
       END rollback_Own_Work;
 
@@ -469,7 +440,7 @@ IS
       -- Validate scalar input before any lock or DML.
       ------------------------------------------------------------------------
       IF p_request_uuid IS NULL
-         OR NOT is_Uuid(p_request_uuid)
+         OR NOT MI_Utils.is_Uuid(p_request_uuid)
       THEN
          RETURN
             failure_Result(
@@ -479,7 +450,7 @@ IS
       END IF;
 
       IF p_message_uuid IS NULL
-         OR NOT is_Uuid(p_message_uuid)
+         OR NOT MI_Utils.is_Uuid(p_message_uuid)
       THEN
          RETURN
             failure_Result(
@@ -489,7 +460,7 @@ IS
       END IF;
 
       IF p_item_uuid IS NULL
-         OR NOT is_Uuid(p_item_uuid)
+         OR NOT MI_Utils.is_Uuid(p_item_uuid)
       THEN
          RETURN
             failure_Result(
@@ -541,7 +512,7 @@ IS
 
       BEGIN
          l_item_table :=
-            simple_Sql_Name(
+            MI_Utils.simple_Sql_Name(
                p_value => p_item_table,
                p_kind  => 'item table'
             );
@@ -646,8 +617,7 @@ IS
       );
 
 
-      SAVEPOINT MI_ITEM_RESULT_APPLY_DML;
-      l_savepoint_set := TRUE;
+      DCL.SavePoint(l_savepoint_name);
 
 
       ------------------------------------------------------------------------

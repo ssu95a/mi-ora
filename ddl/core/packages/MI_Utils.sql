@@ -1,7 +1,7 @@
 CREATE OR REPLACE PACKAGE MI_Utils
 IS
 
-  VERSION CONSTANT VARCHAR2(100) := '$Id: {1.1.0} {07.11.2026} Sulimoff$';
+  VERSION CONSTANT VARCHAR2(100) := '$Id: {1.2.0} {09.11.2026} Sulimoff$';
 
 
    ----------------------------------------------------------------------------
@@ -37,6 +37,33 @@ IS
 
    ----------------------------------------------------------------------------
    FUNCTION get_Version
+      RETURN VARCHAR2;
+
+
+   ----------------------------------------------------------------------------
+   -- Проверка канонического текстового представления UUID.
+   -- Версия UUID намеренно не ограничивается.
+   -- NULL и строки другого формата возвращают FALSE.
+   ----------------------------------------------------------------------------
+   FUNCTION is_Uuid (
+      p_value IN VARCHAR2
+   )
+      RETURN BOOLEAN;
+
+
+   ----------------------------------------------------------------------------
+   -- Проверяет и нормализует простой Oracle identifier.
+   --
+   -- Разрешены только неприведённые к кавычкам ASCII-имена текущей схемы,
+   -- совместимые с ограничением Oracle 12.1 в 30 байт. Schema prefix,
+   -- quoted identifiers и фрагменты SQL запрещены.
+   --
+   -- Возвращает имя в uppercase. При ошибке поднимает ORA-20010.
+   ----------------------------------------------------------------------------
+   FUNCTION simple_Sql_Name (
+      p_value IN VARCHAR2,
+      p_kind  IN VARCHAR2 DEFAULT 'SQL identifier'
+   )
       RETURN VARCHAR2;
 
 
@@ -112,6 +139,56 @@ IS
    BEGIN
       RETURN VERSION;
    END get_Version;
+
+
+   ----------------------------------------------------------------------------
+   FUNCTION is_Uuid (
+      p_value IN VARCHAR2
+   )
+      RETURN BOOLEAN
+   IS
+   BEGIN
+      IF p_value IS NULL THEN
+         RETURN FALSE;
+      END IF;
+
+      RETURN
+         REGEXP_LIKE(
+            TRIM(p_value),
+            '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+         );
+   END is_Uuid;
+
+
+   ----------------------------------------------------------------------------
+   FUNCTION simple_Sql_Name (
+      p_value IN VARCHAR2,
+      p_kind  IN VARCHAR2 DEFAULT 'SQL identifier'
+   )
+      RETURN VARCHAR2
+   IS
+      l_value VARCHAR2(32767);
+   BEGIN
+      l_value := UPPER(TRIM(p_value));
+
+      IF l_value IS NULL
+         OR LENGTHB(l_value) > 30
+         OR NOT REGEXP_LIKE(
+                   l_value,
+                   '^[A-Z][A-Z0-9_$#]*$'
+                )
+      THEN
+         RAISE_APPLICATION_ERROR(
+            -20010,
+            'Invalid '
+            || SUBSTR(NVL(p_kind, 'SQL identifier'), 1, 100)
+            || ': '
+            || SUBSTR(NVL(p_value, '<NULL>'), 1, 1800)
+         );
+      END IF;
+
+      RETURN DBMS_ASSERT.simple_sql_name(l_value);
+   END simple_Sql_Name;
 
 
    /* */
