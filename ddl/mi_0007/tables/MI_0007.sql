@@ -20,7 +20,7 @@
 -- ITM_ID values are generated from one sequence for every MI_xxxx item table.
 -- The item table itself is still resolved through MI_REQ.INF_ID.
 -------------------------------------------------------------------------------
-CREATE SEQUENCE S_MI_ITEM
+CREATE SEQUENCE S_MI_ITM
    START WITH 1
    INCREMENT BY 1
    MINVALUE 1
@@ -34,7 +34,7 @@ CREATE SEQUENCE S_MI_ITEM
 CREATE TABLE MI_0007
 (
    ITM_ID         INTEGER
-                     DEFAULT ON NULL S_MI_ITEM.NEXTVAL NOT NULL,
+                     DEFAULT ON NULL S_MI_ITM.NEXTVAL NOT NULL,
 
    EXTERNAL_UUID  CHAR(36) NOT NULL,
    REQ_ID         INTEGER  NOT NULL,
@@ -111,7 +111,7 @@ COMMENT ON TABLE MI_0007 IS
    'MI-edo. Валидность данных физлиц. Элементы запросов проверки паспортных данных {$Id$}';
 
 COMMENT ON COLUMN MI_0007.ITM_ID IS
-   'Глобальный ID элемента запроса из S_MI_ITEM';
+   'Глобальный ID элемента запроса из S_MI_ITM';
 
 COMMENT ON COLUMN MI_0007.EXTERNAL_UUID IS
    'Внешний UUID элемента запроса';
