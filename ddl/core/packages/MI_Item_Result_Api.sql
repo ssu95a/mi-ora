@@ -105,12 +105,13 @@ IS
 
    /*
       Package-level constant хранит стабильную идентичность пакета.
-      Контекст request/item задаётся только в локальной value-copy l_log.
+      Простые вызовы без operation context идут напрямую через g_log.
+      Локальная value-copy нужна только когда требуется context().
    */
    g_log CONSTANT MI_Logger_T :=
       MI_Logger_T(
          p_logger_name  => cLogger,
-         p_package_name => 'MI_Item_Result_Api'
+         p_package_name => $$PLSQL_UNIT
       );
 
 
@@ -603,7 +604,7 @@ IS
       END IF;
 
 
-      l_log.enter_f(
+      g_log.enter_f(
          p_function_name => 'apply_Item_Result',
          p_message_text  =>
                'table='

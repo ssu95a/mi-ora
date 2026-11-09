@@ -10,6 +10,8 @@ CREATE OR REPLACE TYPE MI_Logger_T FORCE AS OBJECT
       - package-level экземпляр объявляется только в PACKAGE BODY;
       - logger_name, package_name и wsp_id задаются конструктором;
       - изменяемый correlation context задаётся только через context();
+      - read-only методы объявляют SELF IN и могут вызываться прямо на
+        package-level CONSTANT; context()/clear_Context() сохраняют SELF IN OUT;
       - persistence, context resolution, filtering и autonomous transaction
         остаются исключительно в MI_Logger package.
    */
@@ -60,6 +62,7 @@ CREATE OR REPLACE TYPE MI_Logger_T FORCE AS OBJECT
       MI_Logger.Level_t не является schema-level SQL type.
    */
    MEMBER PROCEDURE log (
+      SELF             IN MI_Logger_T,
       p_level         IN INTEGER,
       p_message_text  IN VARCHAR2,
       p_action_code   IN VARCHAR2 DEFAULT NULL,
@@ -68,6 +71,7 @@ CREATE OR REPLACE TYPE MI_Logger_T FORCE AS OBJECT
 
 
    MEMBER PROCEDURE trace (
+      SELF             IN MI_Logger_T,
       p_message_text  IN VARCHAR2,
       p_action_code   IN VARCHAR2 DEFAULT NULL,
       p_details_text  IN CLOB     DEFAULT NULL
@@ -75,6 +79,7 @@ CREATE OR REPLACE TYPE MI_Logger_T FORCE AS OBJECT
 
 
    MEMBER PROCEDURE debug (
+      SELF             IN MI_Logger_T,
       p_message_text  IN VARCHAR2,
       p_action_code   IN VARCHAR2 DEFAULT NULL,
       p_details_text  IN CLOB     DEFAULT NULL
@@ -82,6 +87,7 @@ CREATE OR REPLACE TYPE MI_Logger_T FORCE AS OBJECT
 
 
    MEMBER PROCEDURE info (
+      SELF             IN MI_Logger_T,
       p_message_text  IN VARCHAR2,
       p_action_code   IN VARCHAR2 DEFAULT NULL,
       p_details_text  IN CLOB     DEFAULT NULL
@@ -89,6 +95,7 @@ CREATE OR REPLACE TYPE MI_Logger_T FORCE AS OBJECT
 
 
    MEMBER PROCEDURE warn (
+      SELF             IN MI_Logger_T,
       p_message_text  IN VARCHAR2,
       p_action_code   IN VARCHAR2 DEFAULT NULL,
       p_details_text  IN CLOB     DEFAULT NULL
@@ -96,6 +103,7 @@ CREATE OR REPLACE TYPE MI_Logger_T FORCE AS OBJECT
 
 
    MEMBER PROCEDURE error (
+      SELF             IN MI_Logger_T,
       p_message_text  IN VARCHAR2,
       p_action_code   IN VARCHAR2 DEFAULT NULL,
       p_details_text  IN CLOB     DEFAULT NULL
@@ -103,6 +111,7 @@ CREATE OR REPLACE TYPE MI_Logger_T FORCE AS OBJECT
 
 
    MEMBER PROCEDURE fatal (
+      SELF             IN MI_Logger_T,
       p_message_text  IN VARCHAR2,
       p_action_code   IN VARCHAR2 DEFAULT NULL,
       p_details_text  IN CLOB     DEFAULT NULL
@@ -110,6 +119,7 @@ CREATE OR REPLACE TYPE MI_Logger_T FORCE AS OBJECT
 
 
    MEMBER PROCEDURE enter_f (
+      SELF             IN MI_Logger_T,
       p_function_name  IN VARCHAR2,
       p_message_text   IN VARCHAR2 DEFAULT NULL,
       p_parameters     IN CLOB     DEFAULT NULL
@@ -117,6 +127,7 @@ CREATE OR REPLACE TYPE MI_Logger_T FORCE AS OBJECT
 
 
    MEMBER PROCEDURE exit_f (
+      SELF             IN MI_Logger_T,
       p_function_name  IN VARCHAR2,
       p_message_text   IN VARCHAR2 DEFAULT NULL,
       p_details_text   IN CLOB     DEFAULT NULL
@@ -124,6 +135,7 @@ CREATE OR REPLACE TYPE MI_Logger_T FORCE AS OBJECT
 
 
    MEMBER PROCEDURE variable_Value (
+      SELF             IN MI_Logger_T,
       p_variable_name  IN VARCHAR2,
       p_value_text     IN VARCHAR2,
       p_details_text   IN CLOB     DEFAULT NULL
@@ -131,17 +143,20 @@ CREATE OR REPLACE TYPE MI_Logger_T FORCE AS OBJECT
 
 
    MEMBER PROCEDURE label (
+      SELF            IN MI_Logger_T,
       p_message_text  IN VARCHAR2,
       p_details_text  IN CLOB DEFAULT NULL
    ),
 
 
    MEMBER PROCEDURE call_Stack (
+      SELF            IN MI_Logger_T,
       p_message_text  IN VARCHAR2 DEFAULT NULL
    ),
 
 
    MEMBER PROCEDURE version (
+      SELF             IN MI_Logger_T,
       p_object_name   IN VARCHAR2,
       p_version_text  IN VARCHAR2
    )
@@ -223,6 +238,7 @@ IS
 
    ---------------------------------------------------------------------------
    MEMBER PROCEDURE log (
+      SELF             IN MI_Logger_T,
       p_level         IN INTEGER,
       p_message_text  IN VARCHAR2,
       p_action_code   IN VARCHAR2 DEFAULT NULL,
@@ -263,6 +279,7 @@ IS
 
    ---------------------------------------------------------------------------
    MEMBER PROCEDURE trace (
+      SELF             IN MI_Logger_T,
       p_message_text  IN VARCHAR2,
       p_action_code   IN VARCHAR2 DEFAULT NULL,
       p_details_text  IN CLOB     DEFAULT NULL
@@ -280,6 +297,7 @@ IS
 
    ---------------------------------------------------------------------------
    MEMBER PROCEDURE debug (
+      SELF             IN MI_Logger_T,
       p_message_text  IN VARCHAR2,
       p_action_code   IN VARCHAR2 DEFAULT NULL,
       p_details_text  IN CLOB     DEFAULT NULL
@@ -297,6 +315,7 @@ IS
 
    ---------------------------------------------------------------------------
    MEMBER PROCEDURE info (
+      SELF             IN MI_Logger_T,
       p_message_text  IN VARCHAR2,
       p_action_code   IN VARCHAR2 DEFAULT NULL,
       p_details_text  IN CLOB     DEFAULT NULL
@@ -314,6 +333,7 @@ IS
 
    ---------------------------------------------------------------------------
    MEMBER PROCEDURE warn (
+      SELF             IN MI_Logger_T,
       p_message_text  IN VARCHAR2,
       p_action_code   IN VARCHAR2 DEFAULT NULL,
       p_details_text  IN CLOB     DEFAULT NULL
@@ -331,6 +351,7 @@ IS
 
    ---------------------------------------------------------------------------
    MEMBER PROCEDURE error (
+      SELF             IN MI_Logger_T,
       p_message_text  IN VARCHAR2,
       p_action_code   IN VARCHAR2 DEFAULT NULL,
       p_details_text  IN CLOB     DEFAULT NULL
@@ -348,6 +369,7 @@ IS
 
    ---------------------------------------------------------------------------
    MEMBER PROCEDURE fatal (
+      SELF             IN MI_Logger_T,
       p_message_text  IN VARCHAR2,
       p_action_code   IN VARCHAR2 DEFAULT NULL,
       p_details_text  IN CLOB     DEFAULT NULL
@@ -365,6 +387,7 @@ IS
 
    ---------------------------------------------------------------------------
    MEMBER PROCEDURE enter_f (
+      SELF             IN MI_Logger_T,
       p_function_name  IN VARCHAR2,
       p_message_text   IN VARCHAR2 DEFAULT NULL,
       p_parameters     IN CLOB     DEFAULT NULL
@@ -401,6 +424,7 @@ IS
 
    ---------------------------------------------------------------------------
    MEMBER PROCEDURE exit_f (
+      SELF             IN MI_Logger_T,
       p_function_name  IN VARCHAR2,
       p_message_text   IN VARCHAR2 DEFAULT NULL,
       p_details_text   IN CLOB     DEFAULT NULL
@@ -437,6 +461,7 @@ IS
 
    ---------------------------------------------------------------------------
    MEMBER PROCEDURE variable_Value (
+      SELF             IN MI_Logger_T,
       p_variable_name  IN VARCHAR2,
       p_value_text     IN VARCHAR2,
       p_details_text   IN CLOB     DEFAULT NULL
@@ -457,6 +482,7 @@ IS
 
    ---------------------------------------------------------------------------
    MEMBER PROCEDURE label (
+      SELF            IN MI_Logger_T,
       p_message_text  IN VARCHAR2,
       p_details_text  IN CLOB DEFAULT NULL
    )
@@ -473,6 +499,7 @@ IS
 
    ---------------------------------------------------------------------------
    MEMBER PROCEDURE call_Stack (
+      SELF            IN MI_Logger_T,
       p_message_text  IN VARCHAR2 DEFAULT NULL
    )
    IS
@@ -488,6 +515,7 @@ IS
 
    ---------------------------------------------------------------------------
    MEMBER PROCEDURE version (
+      SELF             IN MI_Logger_T,
       p_object_name   IN VARCHAR2,
       p_version_text  IN VARCHAR2
    )

@@ -101,12 +101,13 @@ IS
 
    /*
       Package-level constant хранит стабильную идентичность пакета.
-      Контекст операции задаётся только в локальной value-copy l_log.
+      Простые вызовы без operation context идут напрямую через g_log.
+      Локальная value-copy нужна только когда требуется context().
    */
    g_log CONSTANT MI_Logger_T :=
       MI_Logger_T(
          p_logger_name  => cLogger,
-         p_package_name => 'MI_Person_Api'
+         p_package_name => $$PLSQL_UNIT
       );
 
 

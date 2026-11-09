@@ -49,6 +49,9 @@ AS
 
       Все context-id являются диагностическими correlation keys.
       MI_LOG намеренно не содержит FK.
+
+      Событие также зеркалируется в DBMS_OUTPUT. Выводом управляет клиент
+      стандартно: SET SERVEROUTPUT ON/OFF или DBMS_OUTPUT.ENABLE/DISABLE.
    */
    PROCEDURE log (
       p_logger_name    IN VARCHAR2,
@@ -285,7 +288,7 @@ END MI_Logger;
 CREATE OR REPLACE PACKAGE BODY MI_Logger
 AS
 
-   cVersion CONSTANT VARCHAR2(100) := 'MI_Logger 1.2.0';
+   cVersion CONSTANT VARCHAR2(100) := 'MI_Logger 1.3.0';
 
    g_log_enabled BOOLEAN     := TRUE;
    
@@ -324,6 +327,170 @@ BEGIN
              ELSE NULL
           END;
 END level_Code;
+
+
+FUNCTION output_Level_Code (
+   p_level IN Level_t
+)
+   RETURN VARCHAR2
+IS
+BEGIN
+   RETURN CASE p_level
+             WHEN LEVEL_TRACE THEN 'trc'
+             WHEN LEVEL_DEBUG THEN 'dbg'
+             WHEN LEVEL_INFO  THEN 'inf'
+             WHEN LEVEL_WARN  THEN 'wrn'
+             WHEN LEVEL_ERROR THEN 'err'
+             WHEN LEVEL_FATAL THEN 'ftl'
+             ELSE '-'
+          END;
+END output_Level_Code;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE append_Output_Context (
+      p_context_text IN OUT NOCOPY VARCHAR2,
+      p_name         IN            VARCHAR2,
+      p_value        IN            VARCHAR2
+   )
+   IS
+   BEGIN
+      IF p_value IS NULL THEN
+         RETURN;
+      END IF;
+
+      IF p_context_text IS NOT NULL THEN
+         p_context_text := p_context_text || ', ';
+      END IF;
+
+      p_context_text := p_context_text || p_name || '=' || p_value;
+   END append_Output_Context;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE put_Dbms_Output_Clob (
+      p_text IN CLOB
+   )
+   IS
+      cChunk_Size       CONSTANT PLS_INTEGER := 4000;
+      cMax_Output_Size  CONSTANT PLS_INTEGER := 12000;
+
+      l_length        INTEGER;
+      l_output_length PLS_INTEGER;
+      l_offset        PLS_INTEGER := 1;
+      l_chunk         VARCHAR2(4000);
+   BEGIN
+      IF p_text IS NULL THEN
+         RETURN;
+      END IF;
+
+      l_length := DBMS_LOB.getlength(p_text);
+
+      IF l_length = 0 THEN
+         RETURN;
+      END IF;
+
+      /*
+         DBMS_OUTPUT is a diagnostic preview, while MI_LOG keeps the complete
+         CLOB. The cap also prevents an unbounded CLOB scan when server output
+         is disabled and PUT_LINE silently discards data.
+      */
+      l_output_length := LEAST(l_length, cMax_Output_Size);
+
+      DBMS_OUTPUT.put_line('  details:');
+
+      WHILE l_offset <= l_output_length LOOP
+         l_chunk :=
+            DBMS_LOB.substr(
+               p_text,
+               LEAST(cChunk_Size, l_output_length - l_offset + 1),
+               l_offset
+            );
+
+         EXIT WHEN l_chunk IS NULL;
+
+         DBMS_OUTPUT.put_line('  ' || l_chunk);
+         l_offset := l_offset + LENGTH(l_chunk);
+      END LOOP;
+
+      IF l_length > cMax_Output_Size THEN
+         DBMS_OUTPUT.put_line(
+            '  <details truncated; complete value is stored in MI_LOG>'
+         );
+      END IF;
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         NULL;
+   END put_Dbms_Output_Clob;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE write_Dbms_Output (
+      p_level          IN Level_t,
+      p_logger_name    IN VARCHAR2,
+      p_action_code    IN VARCHAR2,
+      p_message_text   IN VARCHAR2,
+      p_details_text   IN CLOB,
+
+      p_wsp_id         IN NUMBER,
+      p_inf_id         IN NUMBER,
+      p_req_id         IN NUMBER,
+      p_itm_id         IN NUMBER,
+      p_rsp_id         IN NUMBER,
+      p_correlation_id IN VARCHAR2,
+      p_person_id      IN NUMBER,
+      p_icusnum        IN NUMBER
+   )
+   IS
+      l_header  VARCHAR2(4000);
+      l_context VARCHAR2(4000);
+   BEGIN
+      l_header :=
+            '['
+         || output_Level_Code(p_level)
+         || '] ['
+         || SUBSTR(NVL(p_logger_name, '-'), 1, 64)
+         || ']';
+
+      IF p_action_code IS NOT NULL THEN
+         l_header :=
+              l_header
+           || ' ['
+           || SUBSTR(p_action_code, 1, 64)
+           || ']';
+      END IF;
+
+      l_header :=
+           l_header
+        || ' '
+        || SUBSTR(NVL(p_message_text, '<empty>'), 1, 2000);
+
+      DBMS_OUTPUT.put_line(l_header);
+
+      append_Output_Context(l_context, 'wsp_id',         TO_CHAR(p_wsp_id));
+      append_Output_Context(l_context, 'inf_id',         TO_CHAR(p_inf_id));
+      append_Output_Context(l_context, 'req_id',         TO_CHAR(p_req_id));
+      append_Output_Context(l_context, 'itm_id',         TO_CHAR(p_itm_id));
+      append_Output_Context(l_context, 'rsp_id',         TO_CHAR(p_rsp_id));
+      append_Output_Context(l_context, 'correlation_id', p_correlation_id);
+      append_Output_Context(l_context, 'person_id',      TO_CHAR(p_person_id));
+      append_Output_Context(l_context, 'icusnum',        TO_CHAR(p_icusnum));
+
+      IF l_context IS NOT NULL THEN
+         DBMS_OUTPUT.put_line('  context: ' || l_context);
+      END IF;
+
+      put_Dbms_Output_Clob(p_details_text);
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         /*
+            DBMS_OUTPUT is only a diagnostic mirror and must never affect
+            either persistence or the caller's business flow.
+         */
+         NULL;
+   END write_Dbms_Output;
 
 
    ---------------------------------------------------------------------------
@@ -652,6 +819,32 @@ END level_Code;
          p_wsp_od         => l_wsp_id,
          p_inf_od         => l_inf_id,
          p_correlation_od => l_correlation_id
+      );
+
+
+      /*
+         DBMS_OUTPUT является диагностическим зеркалом той же записи.
+         Если output в клиенте не включён, DBMS_OUTPUT.PUT_LINE является
+         no-op. Ошибки/переполнение output buffer изолированы внутри helper.
+
+         Вывод выполняется до проверки AU_SESSION_ID, поэтому диагностика
+         остаётся доступной и при проблеме системного audit context.
+      */
+      write_Dbms_Output(
+         p_level          => p_level,
+         p_logger_name    => p_logger_name,
+         p_action_code    => p_action_code,
+         p_message_text   => p_message_text,
+         p_details_text   => p_details_text,
+
+         p_wsp_id         => l_wsp_id,
+         p_inf_id         => l_inf_id,
+         p_req_id         => p_req_id,
+         p_itm_id         => p_itm_id,
+         p_rsp_id         => p_rsp_id,
+         p_correlation_id => l_correlation_id,
+         p_person_id      => p_person_id,
+         p_icusnum        => p_icusnum
       );
 
 
