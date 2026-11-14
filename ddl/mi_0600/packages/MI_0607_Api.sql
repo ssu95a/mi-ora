@@ -71,6 +71,7 @@ CREATE OR REPLACE PACKAGE BODY MI_0607_Api
 IS
 
    cLogger CONSTANT VARCHAR2(64) := 'mi.0607';
+   
    cInfId  CONSTANT MI_REQ.INF_ID%TYPE := 607;
 
    /* глобальный логгер */
@@ -138,14 +139,7 @@ IS
              ITM_ID = p_itm_id;
 
       IF SQL%ROWCOUNT <> 1 THEN
-         raise_Technical_Error(
-            p_code => 'MI_0607_ITEM_RESULT_NOT_UPDATED',
-            p_info =>
-                  'MI_0600 result update failed: itm_id='
-               || p_itm_id
-               || ', rows='
-               || SQL%ROWCOUNT
-         );
+         raise_Technical_Error( p_code => 'MI_0607_ITEM_RESULT_NOT_UPDATED', p_info => 'MI_0600 result update failed: itm_id=' || p_itm_id || ', rows=' || SQL%ROWCOUNT );
       END IF;
       
    END set_Item_Result;
@@ -426,6 +420,8 @@ IS
          p_correlation_id => p_correlation_id
       );
 
+      l_log.enter_f( p_function_name => 'process_Document_Received', p_message_text  => 'task_id=' || TRIM(p_task_id) || ', file=' || l_file_name );
+
       /* Проверяем transport contract до любого DML. */
       IF p_message_uuid IS NULL OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
       THEN
@@ -467,16 +463,12 @@ IS
       END IF;
 
 
-      l_doc_type :=
-         UPPER(TRIM(p_doc_type));
+      l_doc_type := UPPER(TRIM(p_doc_type));
 
       IF l_doc_type IS NULL OR l_doc_type NOT IN ('UNO', 'UPO') THEN
          raise_Technical_Error(
             p_code => 'MI_0607_INVALID_DOC_TYPE',
-            p_info =>
-                  'Unsupported DOCUMENT_RECEIVED.docType='
-               || NVL(l_doc_type, '<NULL>')
-               || '; expected UNO or UPO'
+            p_info => 'Unsupported DOCUMENT_RECEIVED.docType=' || NVL(l_doc_type, '<NULL>') || '; expected UNO or UPO'
          );
       END IF;
 
@@ -489,8 +481,7 @@ IS
       END IF;
 
 
-      l_file_name :=
-         TRIM(p_file_name);
+      l_file_name := TRIM(p_file_name);
 
       IF l_file_name IS NULL THEN
          raise_Technical_Error(
@@ -516,13 +507,8 @@ IS
          );
       END IF;
 
-      l_journal_name :=
-         journal_Name(p_message_uuid);
+      l_journal_name := journal_Name(p_message_uuid);
 
-
-      ------------------------------------------------------------------------
-      -- Idempotent replay before any DML.
-      ------------------------------------------------------------------------
       IF find_Existing(
             p_journal_name   => l_journal_name,
             p_req_id         => l_req_id,
@@ -536,20 +522,6 @@ IS
          RETURN;
       END IF;
 
-
-      ------------------------------------------------------------------------
-      -- Everything created by this API belongs to one caller transaction.
-      ------------------------------------------------------------------------
-      l_log.enter_f(
-         p_function_name => 'process_Document_Received',
-         p_message_text  =>
-               'task_id='
-            || TRIM(p_task_id)
-            || ', file='
-            || l_file_name
-      );
-
-
       DCL.SavePoint(l_own_savepoint);
 
       IF l_own_savepoint IS NULL THEN
@@ -560,9 +532,7 @@ IS
       END IF;
 
 
-      ------------------------------------------------------------------------
       -- 1. MI_REQ: durable integration journal header.
-      ------------------------------------------------------------------------
       l_request_result :=
          MI_Request_Api.create_Request(
             p_inf_id            => cInfId,
@@ -590,13 +560,9 @@ IS
       END IF;
 
 
-      l_req_id :=
-         TO_NUMBER(
-            l_request_result.parameters('req_id')
-         );
+      l_req_id := TO_NUMBER( l_request_result.parameters('req_id') );
 
-      l_correlation_id :=
-         l_request_result.parameters('correlation_id');
+      l_correlation_id := l_request_result.parameters('correlation_id');
 
 
       IF l_req_id IS NULL THEN
@@ -607,11 +573,8 @@ IS
       END IF;
 
 
-      ------------------------------------------------------------------------
       -- 2. MI_0600: durable integration item + original payload.
-      ------------------------------------------------------------------------
-      l_item_uuid :=
-         MI_Utils.uuid_V7;
+      l_item_uuid := MI_Utils.uuid_V7;
 
 
       INSERT INTO MI_0600 (
@@ -648,9 +611,7 @@ IS
            INTO l_itm_id;
 
 
-      ------------------------------------------------------------------------
       -- Исходное имя входящего файла сохраняем отдельно.
-      ------------------------------------------------------------------------
       INSERT INTO MI_0600_F (
          ITM_ID,
          CZIP_FILE_NAME
@@ -694,9 +655,7 @@ IS
       END IF;
 
 
-      ------------------------------------------------------------------------
       -- 3. Business module: create RSD_BASES.
-      ------------------------------------------------------------------------
       l_err       := NULL;
       l_file_type := NULL;
 
@@ -711,16 +670,13 @@ IS
          );
 
 
-      ------------------------------------------------------------------------
       -- CreateBase business failure.
-      ------------------------------------------------------------------------
       IF NVL(l_base_id, 0) = 0 THEN
          return_Business_Failure(
             p_ret_code_value => RET_CREATE_BASE_FAILED,
             p_error_code     => 'CREATE_BASE_FAILED',
             p_info           => NVL(l_err, 'RD_PKG.CreateBase failed'),
-            p_log_message    =>
-               'RD_PKG.CreateBase rejected DOCUMENT_RECEIVED',
+            p_log_message    => 'RD_PKG.CreateBase rejected DOCUMENT_RECEIVED', 
             p_action_code    => 'create_base_failed'
          );
 
@@ -728,88 +684,70 @@ IS
       END IF;
 
 
-      ------------------------------------------------------------------------
       -- 4. Payload docType must match the type detected from JSON content.
-      ------------------------------------------------------------------------
-      l_file_type :=
-         UPPER(TRIM(l_file_type));
+      l_file_type := UPPER(TRIM(l_file_type));
 
 
-      IF l_file_type IS NULL
-         OR l_file_type <> l_doc_type
+      IF l_file_type IS NULL OR l_file_type <> l_doc_type
       THEN
          return_Business_Failure(
             p_ret_code_value => RET_DOC_TYPE_MISMATCH,
             p_error_code     => 'DOC_TYPE_MISMATCH',
-            p_info           =>
-                  'DOCUMENT_RECEIVED docType='
-               || l_doc_type
-               || ', detected fileType='
-               || NVL(l_file_type, '<NULL>'),
+            p_info           => 'DOCUMENT_RECEIVED docType=' || l_doc_type || ', detected fileType=' || NVL(l_file_type, '<NULL>'),
             p_log_message    => 'DOCUMENT_RECEIVED docType mismatch',
             p_action_code    => 'doc_type_mismatch'
          );
 
          RETURN;
+         
       END IF;
 
 
-      ------------------------------------------------------------------------
       -- 5. CreateBase currently does not persist transport metadata.
-      ------------------------------------------------------------------------
       UPDATE RSD_BASES
          SET TASKID  = TRIM(p_task_id),
              DOCDATE = p_doc_date
-       WHERE ID = l_base_id;
+       WHERE 
+             ID = l_base_id;
 
 
       IF SQL%ROWCOUNT <> 1 THEN
          raise_Technical_Error(
             p_code => 'MI_0607_BASE_NOT_UPDATED',
-            p_info =>
-                  'RSD_BASES metadata update failed: id='
-               || l_base_id
-               || ', rows='
-               || SQL%ROWCOUNT
+            p_info => 'RSD_BASES metadata update failed: id=' || l_base_id || ', rows=' || SQL%ROWCOUNT
          );
       END IF;
 
 
-      ------------------------------------------------------------------------
       -- 6. Run RSD business processing.
-      ------------------------------------------------------------------------
       l_err          := NULL;
       l_parse_result := NULL;
 
 
       l_parse_result :=
-         RD_PKG.Parsing(
+         RD_PKG.Parsing (
             pErr         => l_err,
             ppID         => l_base_id,
             pOutFilename => NULL
          );
 
 
-      ------------------------------------------------------------------------
       -- Parsing business failure.
-      ------------------------------------------------------------------------
       IF l_parse_result IS NULL THEN
          return_Business_Failure(
             p_ret_code_value => RET_PARSING_FAILED,
             p_error_code     => 'PARSING_FAILED',
             p_info           => NVL(l_err, 'RD_PKG.Parsing failed'),
-            p_log_message    =>
-               'RD_PKG.Parsing rejected DOCUMENT_RECEIVED',
+            p_log_message    => 'RD_PKG.Parsing rejected DOCUMENT_RECEIVED',
             p_action_code    => 'parsing_failed'
          );
 
          RETURN;
+         
       END IF;
 
 
-      ------------------------------------------------------------------------
       -- 7. Successful business result.
-      ------------------------------------------------------------------------
       set_Item_Result(
          p_itm_id     => l_itm_id,
          p_ires_code  => MI_Item_Result_Api.RESPONSE_OK,
@@ -829,26 +767,15 @@ IS
 
       p_ret_code := RET_OK;
 
-      p_ret_info :=
-         'DOCUMENT_RECEIVED processed successfully';
+      p_ret_info := 'DOCUMENT_RECEIVED processed successfully';
 
-
-      l_log.info(
+      l_log.info (
          p_message_text => 'DOCUMENT_RECEIVED processed',
          p_action_code  => 'processed',
-         p_details_text =>
-            TO_CLOB(
-                  'base_id='
-               || l_base_id
-               || ', file_type='
-               || l_file_type
-               || ', parse_result='
-               || l_parse_result
-            )
+         p_details_text => TO_CLOB( 'base_id=' || l_base_id  || ', file_type=' || l_file_type || ', parse_result=' || l_parse_result )
       );
 
-
-      l_log.exit_f(
+      l_log.exit_f (
          p_function_name => 'process_Document_Received',
          p_message_text  => 'OK'
       );
@@ -863,24 +790,20 @@ IS
       -- header/item and return the committed existing journal.
       ------------------------------------------------------------------------
       WHEN DUP_VAL_ON_INDEX THEN
-         l_sqlerrm := SQLERRM;
-
-         l_rollback_ok := rollback_Own_Work;
+      
+         l_sqlerrm     := SQLERRM;
+         l_rollback_ok := rollback_Own_Work();
 
          IF NOT l_rollback_ok THEN
             raise_Technical_Error(
                p_code    => 'MI_0607_ROLLBACK_FAILED',
-               p_info    =>
-                  'Не удалось откатить собственную работу после unique conflict',
+               p_info    => 'Не удалось откатить собственную работу после unique conflict',
                p_details => TO_CLOB(l_sqlerrm)
             );
          END IF;
 
 
-         IF INSTR(
-               UPPER(l_sqlerrm),
-               'UK_MI_0600__CZIP_NAME'
-            ) > 0
+         IF INSTR( UPPER(l_sqlerrm), 'UK_MI_0600__CZIP_NAME' ) > 0
             AND find_Existing(
                    p_journal_name   => l_journal_name,
                    p_req_id         => l_req_id,
@@ -913,27 +836,17 @@ IS
       -- classification at the integration layer.
       ------------------------------------------------------------------------
       WHEN OTHERS THEN
-         l_sqlerrm := SQLERRM;
-
-         l_rollback_ok := rollback_Own_Work;
-
+         l_sqlerrm     := SQLERRM;
+         l_rollback_ok := rollback_Own_Work();
 
          l_log.error(
             p_message_text => 'process_Document_Received failed',
             p_action_code  => 'process',
-            p_details_text =>
-               TO_CLOB(
-                     l_sqlerrm
-                  || CHR(10)
-                  || DBMS_UTILITY.format_error_backtrace
-                  || CHR(10)
-                  || 'own_rollback='
-                  || MI_Utils.to_Char(l_rollback_ok)
-               )
+            p_details_text => TO_CLOB( l_sqlerrm || CHR(10) || DBMS_UTILITY.format_error_backtrace  || CHR(10) || 'own_rollback=' || MI_Utils.to_Char(l_rollback_ok) )
          );
 
-
          RAISE;
+         
    END process_Document_Received;
 
 

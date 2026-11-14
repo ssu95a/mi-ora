@@ -1,7 +1,7 @@
 -- Oracle 12.1. Initial DDL for MI_0600.
 --
--- РќР°Р·РЅР°С‡РµРЅРёРµ:
---    РѕРґРёРЅ ZIP-Р°СЂС…РёРІ Р­Р”Рћ СЃ Р¤РќРЎ РЅР° request РІРёРґРѕРІ СЃРІРµРґРµРЅРёР№
+-- Назначение:
+--    один ZIP-архив ЭДО с ФНС на request видов сведений
 --    601-604, 611, 612.
 --
 -- Prerequisites:
@@ -150,55 +150,104 @@ ALTER TABLE MI_0600
 -- Comments
 -------------------------------------------------------------------------------
 COMMENT ON TABLE MI_0600 IS
-   'MI-edo. Р­Р”Рћ СЃ Р¤РќРЎ. ZIP-СЌР»РµРјРµРЅС‚С‹ Р·Р°РїСЂРѕСЃРѕРІ РІРёРґРѕРІ СЃРІРµРґРµРЅРёР№ 601-604, 611, 612 {$Id$}';
+   'MI-edo. ЭДО с ФНС. ZIP-элементы запросов видов сведений 601-604, 611, 612 {$Id$}';
 
 COMMENT ON COLUMN MI_0600.ITM_ID IS
-   'Р“Р»РѕР±Р°Р»СЊРЅС‹Р№ ID СЌР»РµРјРµРЅС‚Р° Р·Р°РїСЂРѕСЃР° РёР· S_MI_ITM';
+   'Глобальный ID элемента запроса из S_MI_ITM';
 
 COMMENT ON COLUMN MI_0600.EXTERNAL_UUID IS
-   'Р’РЅРµС€РЅРёР№ UUID СЌР»РµРјРµРЅС‚Р°';
+   'Внешний UUID элемента';
 
 COMMENT ON COLUMN MI_0600.REQ_ID IS
-   'ID Р·Р°РіРѕР»РѕРІРєР° Р·Р°РїСЂРѕСЃР° /MI_REQ/; РѕРґРёРЅ item РЅР° request';
+   'ID заголовка запроса /MI_REQ/; один item на request';
 
 COMMENT ON COLUMN MI_0600.CZIP_NAME IS
-   'РќР°РёРјРµРЅРѕРІР°РЅРёРµ ZIP-Р°СЂС…РёРІР°; РєР»СЋС‡ РёРґРµРјРїРѕС‚РµРЅС‚РЅРѕСЃС‚Рё capture flow';
+   'Наименование ZIP-архива; ключ идемпотентности capture flow';
 
 COMMENT ON COLUMN MI_0600.BZIP_DATA IS
-   'Р”Р°РЅРЅС‹Рµ ZIP-Р°СЂС…РёРІР°';
+   'Данные ZIP-архива';
 
 COMMENT ON COLUMN MI_0600.IZIP_SIZE IS
-   'Р Р°Р·РјРµСЂ ZIP-Р°СЂС…РёРІР° РІ Р±Р°Р№С‚Р°С…';
+   'Размер ZIP-архива в байтах';
 
 COMMENT ON COLUMN MI_0600.IZIP_FILES_COUNT IS
-   'РљРѕР»РёС‡РµСЃС‚РІРѕ С„Р°Р№Р»РѕРІ РІ ZIP-Р°СЂС…РёРІРµ';
+   'Количество файлов в ZIP-архиве';
 
 COMMENT ON COLUMN MI_0600.DSEND_STAMP IS
-   'Р”Р°С‚Р° Рё РІСЂРµРјСЏ РїРѕСЃС‚Р°РЅРѕРІРєРё request РІ РѕС‡РµСЂРµРґСЊ РѕС‚РїСЂР°РІРєРё';
+   'Дата и время постановки request в очередь отправки';
 
 COMMENT ON COLUMN MI_0600.ICREATE_TYPE IS
-   'РЎРїРѕСЃРѕР± СЃРѕР·РґР°РЅРёСЏ: 0 - РІСЂСѓС‡РЅСѓСЋ, 1 - Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё';
+   'Способ создания: 0 - вручную, 1 - автоматически';
 
 COMMENT ON COLUMN MI_0600.WAS_UPLOADED IS
-   'РџСЂРёР·РЅР°Рє РІС‹РіСЂСѓР·РєРё Р°СЂС…РёРІР°: 0 - РЅРµС‚, 1 - РґР°';
+   'Признак выгрузки архива: 0 - нет, 1 - да';
 
 COMMENT ON COLUMN MI_0600.CREATED_AT IS
-   'Р”Р°С‚Р° Рё РІСЂРµРјСЏ СЃРѕР·РґР°РЅРёСЏ СЌР»РµРјРµРЅС‚Р°';
+   'Дата и время создания элемента';
 
 COMMENT ON COLUMN MI_0600.CERR_MSG IS
-   'Legacy-С‚РµРєСЃС‚ РѕС€РёР±РєРё; РЅРѕРІС‹Рµ СЂРµР·СѓР»СЊС‚Р°С‚С‹ РёСЃРїРѕР»СЊР·СѓСЋС‚ ERROR_CODE/CRES_INFO';
+   'Legacy-текст ошибки; новые результаты используют ERROR_CODE/CRES_INFO';
 
 COMMENT ON COLUMN MI_0600.MESSAGE_UUID IS
-   'UUID РІС…РѕРґСЏС‰РµРіРѕ СЃРѕРѕР±С‰РµРЅРёСЏ, РєРѕС‚РѕСЂС‹Рј РѕРєРѕРЅС‡Р°С‚РµР»СЊРЅРѕ РѕР±СЂР°Р±РѕС‚Р°РЅ item';
+   'UUID входящего сообщения, которым окончательно обработан item';
 
 COMMENT ON COLUMN MI_0600.IRES_CODE IS
-   'Р‘РёР·РЅРµСЃ-РєРѕРґ СЂРµР·СѓР»СЊС‚Р°С‚Р° Р»РёР±Рѕ -1 РїСЂРё РѕС€РёР±РєРµ РѕР±СЂР°Р±РѕС‚РєРё СЌР»РµРјРµРЅС‚Р°';
+   'Бизнес-код результата либо -1 при ошибке обработки элемента';
 
 COMMENT ON COLUMN MI_0600.TRES_TIME IS
-   'Р”Р°С‚Р° Рё РІСЂРµРјСЏ СЂРµР·СѓР»СЊС‚Р°С‚Р°, РїРѕР»СѓС‡РµРЅРЅС‹Рµ РѕС‚ РІРЅРµС€РЅРµРіРѕ СЃРµСЂРІРёСЃР°';
+   'Дата и время результата, полученные от внешнего сервиса';
 
 COMMENT ON COLUMN MI_0600.CRES_INFO IS
-   'РРЅС„РѕСЂРјР°С†РёСЏ Рѕ Р±РёР·РЅРµСЃ-СЂРµР·СѓР»СЊС‚Р°С‚Рµ РёР»Рё РІРЅРµС€РЅРµР№ РѕС€РёР±РєРµ';
+   'Информация о бизнес-результате или внешней ошибке';
 
 COMMENT ON COLUMN MI_0600.ERROR_CODE IS
-   'РљРѕРґ РІРЅРµС€РЅРµР№ РѕС€РёР±РєРё; РґР»СЏ СѓСЃРїРµС€РЅРѕРіРѕ transport response NULL';
+   'Код внешней ошибки; для успешного transport response NULL';
+
+-- Oracle 12.1. Initial DDL for MI_0600_F.
+--
+-- Список имён файлов внутри ZIP-архива MI_0600.
+-- This is a creation/model-import script, not a repeatable migration.
+
+
+CREATE TABLE MI_0600_F
+(
+   ITM_ID          INTEGER       NOT NULL,
+   CZIP_FILE_NAME  VARCHAR2(300) NOT NULL
+)
+TABLESPACE USERS;
+
+
+/*
+   Reverse key is deliberately not used here: the composite key is not a
+   monotonically growing sequence and its leading ITM_ID is also the FK path.
+*/
+CREATE UNIQUE INDEX P_MI_0600_F
+   ON MI_0600_F (ITM_ID, CZIP_FILE_NAME)
+   TABLESPACE INDEXES;
+
+ALTER TABLE MI_0600_F
+   ADD CONSTRAINT PK_MI_0600_F
+   PRIMARY KEY (ITM_ID, CZIP_FILE_NAME)
+   USING INDEX P_MI_0600_F;
+
+
+CREATE INDEX I_MI_0600_F__FILE_NAME
+   ON MI_0600_F (UPPER(TRIM(CZIP_FILE_NAME)))
+   TABLESPACE INDEXES;
+
+
+ALTER TABLE MI_0600_F
+   ADD CONSTRAINT FK_MI_0600_F__MI_0600
+   FOREIGN KEY (ITM_ID)
+   REFERENCES MI_0600 (ITM_ID)
+   ON DELETE CASCADE;
+
+
+COMMENT ON TABLE MI_0600_F IS
+   'MI-edo. Имена файлов внутри ZIP-архивов MI_0600 {$Id$}';
+
+COMMENT ON COLUMN MI_0600_F.ITM_ID IS
+   'ID ZIP-элемента /MI_0600/';
+
+COMMENT ON COLUMN MI_0600_F.CZIP_FILE_NAME IS
+   'Имя файла внутри ZIP-архива';

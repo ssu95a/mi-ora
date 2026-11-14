@@ -404,13 +404,15 @@ IS
 
       l_log                MI_Logger_T := g_log;
 
-
+      
       PROCEDURE rollback_Own_Work
       IS
          l_name         DCL.T_Name;
          l_rolled_back  BOOLEAN;
       BEGIN
+         
          IF l_savepoint_name IS NOT NULL THEN
+         
             l_name           := l_savepoint_name;
             l_savepoint_name := NULL;
 
@@ -422,11 +424,12 @@ IS
                   p_action_code  => 'rollback_skipped'
                );
             END IF;
+            
          END IF;
+         
       END rollback_Own_Work;
 
 
-      ------------------------------------------------------------------------
       FUNCTION find_Responder_Duplicate
          RETURN BOOLEAN
       IS
@@ -502,28 +505,28 @@ IS
          l_result.parameters('status_cd') := TO_CHAR(l_status_cd);
 
          RETURN TRUE;
+
       END find_Responder_Duplicate;
 
 
    BEGIN
+   
       l_log.context(p_inf_id => p_inf_id);
+
+      l_log.enter_f( p_function_name => 'create_Request', p_message_text  => 'inf_id=' || p_inf_id || ', zip=' || l_czip_name );
 
       l_czip_name := TRIM(p_czip_name);
 
       IF p_inf_id IS NULL OR NOT is_Supported_Inf(p_inf_id) THEN
-         RETURN
-            failure_Result(
-               p_code => 'MI_0600_INVALID_INF_ID',
-               p_info =>
-                     'Unsupported inf_id='
-                  || NVL(TO_CHAR(p_inf_id), '<NULL>')
-                  || '; expected 601, 602, 603, 604, 611 or 612'
-            );
+         RETURN failure_Result( 
+            p_code => 'MI_0600_INVALID_INF_ID', 
+            p_info =>'Unsupported inf_id=' || NVL(TO_CHAR(p_inf_id), '<NULL>') || '; expected 601, 602, 603, 604, 611 or 612' 
+         );
       END IF;
 
       IF l_czip_name IS NULL THEN
          RETURN
-            failure_Result(
+            failure_Result (
                p_code => 'MI_0600_INVALID_ZIP_NAME',
                p_info => 'p_czip_name must not be NULL or blank'
             );
@@ -537,8 +540,7 @@ IS
             );
       END IF;
 
-      IF p_original_req_uuid IS NOT NULL
-         AND NOT MI_Utils.is_Uuid(p_original_req_uuid)
+      IF p_original_req_uuid IS NOT NULL AND NOT MI_Utils.is_Uuid(p_original_req_uuid)
       THEN
          RETURN
             failure_Result(
@@ -547,8 +549,7 @@ IS
             );
       END IF;
 
-      IF p_message_uuid IS NOT NULL
-         AND NOT MI_Utils.is_Uuid(p_message_uuid)
+      IF p_message_uuid IS NOT NULL AND NOT MI_Utils.is_Uuid(p_message_uuid)
       THEN
          RETURN
             failure_Result(
@@ -592,23 +593,14 @@ IS
       IF l_zip_files_count IS NULL THEN
          BEGIN
             l_zip_files_count := p_file_names.COUNT;
-
          EXCEPTION
             WHEN COLLECTION_IS_NULL THEN
                NULL;
          END;
       END IF;
 
-      l_log.enter_f(
-         p_function_name => 'create_Request',
-         p_message_text  =>
-               'inf_id='
-            || p_inf_id
-            || ', zip='
-            || l_czip_name
-      );
 
-      DCL.SavePoint(l_savepoint_name);
+      DCL.SavePoint( l_savepoint_name );
 
       IF archive_Exists(l_czip_name) THEN
          raise_Duplicate_Archive(l_czip_name);
@@ -633,7 +625,8 @@ IS
          );
 
       IF MI_ResultCtx.is_Failed(l_request_result) THEN
-         rollback_Own_Work;
+      
+         rollback_Own_Work();
 
          l_result :=
             MI_ResultCtx.wrap_Exception(
@@ -643,7 +636,9 @@ IS
             );
 
          l_result.parameters('ret_code') := TO_CHAR(RET_FAIL);
+         
          RETURN l_result;
+         
       END IF;
 
       l_req_id         := TO_NUMBER(l_request_result.parameters('req_id'));
@@ -757,7 +752,7 @@ IS
          l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
 
-         rollback_Own_Work;
+         rollback_Own_Work();
 
          l_log.error(
             p_message_text => 'create_Request failed',
@@ -778,7 +773,7 @@ IS
    END create_Request_Impl;
 
 
-   ---------------------------------------------------------------------------
+   /* wrap для вызов через jdbc */
    PROCEDURE create_Request (
       p_inf_id                IN MI_REQ.INF_ID%TYPE,
       p_czip_name             IN MI_0600.CZIP_NAME%TYPE,
@@ -851,7 +846,7 @@ IS
    END create_Request;
 
 
-   ---------------------------------------------------------------------------
+   /* Для ядра, получить дату обработки файла */
    FUNCTION get_Fns_File_Inqueue_Date (
       p_file_name IN MI_0600_F.CZIP_FILE_NAME%TYPE
    )
@@ -874,7 +869,7 @@ IS
    END get_Fns_File_Inqueue_Date;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION apply_Item_Result_Impl (
       p_request_uuid      IN MI_REQ.EXTERNAL_UUID%TYPE,
       p_message_uuid      IN MI_REQ.MESSAGE_UUID%TYPE,
@@ -894,6 +889,7 @@ IS
    IS
       l_result MI_ResultCtx.exec_Result_t;
    BEGIN
+   
       g_log.enter_f(
          p_function_name => 'apply_Item_Result',
          p_message_text  => 'item_uuid=' || TRIM(p_item_uuid)
@@ -924,7 +920,7 @@ IS
    END apply_Item_Result_Impl;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE apply_Item_Result (
       p_request_uuid      IN MI_REQ.EXTERNAL_UUID%TYPE,
       p_message_uuid      IN MI_REQ.MESSAGE_UUID%TYPE,
@@ -987,7 +983,7 @@ IS
    END apply_Item_Result;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE map_Item_Result (
       p_itm_id        IN  NUMBER,
       p_payload_text  IN  CLOB,
@@ -1004,10 +1000,7 @@ IS
       l_log.context(p_itm_id => p_itm_id);
 
       IF LOWER(TRIM(p_payload_type)) <> 'json' THEN
-         RAISE_APPLICATION_ERROR(
-            -20021,
-            'MI_0600 payload mapper supports JSON only'
-         );
+         RAISE_APPLICATION_ERROR( -20021, 'MI_0600 payload mapper supports JSON only' );
       END IF;
 
       SELECT JSON_VALUE(
@@ -1033,13 +1026,12 @@ IS
 
       ELSE
          p_ires_code := MI_Item_Result_Api.RESPONSE_FAIL;
-         p_cres_info :=
-            TO_CLOB(NVL(l_message, 'Ошибка обработки запроса'));
+         p_cres_info := TO_CLOB(NVL(l_message, 'Ошибка обработки запроса'));
 
          IF l_error_code IS NOT NULL THEN
-            p_cres_info :=
-               p_cres_info || TO_CLOB(' [' || l_error_code || ']');
+            p_cres_info := p_cres_info || TO_CLOB(' [' || l_error_code || ']');
          END IF;
+         
       END IF;
 
       l_log.debug(
@@ -1060,7 +1052,7 @@ IS
    END map_Item_Result;
 
 
-   ---------------------------------------------------------------------------
+   /* При отправке запроса */
    PROCEDURE on_Request_Sent (
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )

@@ -3,10 +3,10 @@ IS
 
    /* MI. Служба системных, workspace- и INF-свойств */
 
-   VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.0.2} {15.11.2026} Sulimoff$';
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.2} {15.11.2026} Sulimoff$';
 
 
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2;
 
@@ -61,11 +61,19 @@ IS
 
 END MI_Prp;
 /
-
 CREATE OR REPLACE PACKAGE BODY MI_Prp
 IS
 
-   /* Формирует имя свойства в корпоративном PREF. */
+   /* */
+   FUNCTION get_Version
+      RETURN VARCHAR2
+   IS
+   BEGIN
+      RETURN VERSION;
+   END get_Version;
+
+
+   /* Формирует имя свойства в PREF. */
    FUNCTION make_Property_Name (
       p_obj_id  IN NUMBER,
       p_prp_id  IN VARCHAR2
@@ -83,11 +91,7 @@ IS
       END IF;
 
       IF p_obj_id < 0 THEN
-         RETURN
-               'mi_w'
-            || ABS(p_obj_id)
-            || '_#_'
-            || p_prp_id;
+         RETURN 'mi_w' || ABS(p_obj_id) || '_#_' || p_prp_id;
       END IF;
 
       SELECT WSP_ID
@@ -95,13 +99,8 @@ IS
         FROM MI_INF
        WHERE INF_ID = p_obj_id;
 
-      RETURN
-            'mi_w_'
-         || l_wsp_id
-         || '_i_'
-         || p_obj_id
-         || '_'
-         || p_prp_id;
+      RETURN 'mi_w_' || l_wsp_id || '_i_' || p_obj_id || '_' || p_prp_id;
+      
    END make_Property_Name;
 
 
@@ -124,6 +123,7 @@ IS
          );
 
       RETURN NVL(l_value, p_def_value);
+      
    END get_Property;
 
 
@@ -143,15 +143,6 @@ IS
          p_value
       );
    END set_Property;
-
-
-   /* */
-   FUNCTION get_Version
-      RETURN VARCHAR2
-   IS
-   BEGIN
-      RETURN VERSION;
-   END get_Version;
 
 
    /* */
