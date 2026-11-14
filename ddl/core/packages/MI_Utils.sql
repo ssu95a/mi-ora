@@ -4,18 +4,13 @@ IS
   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.2.0} {09.11.2026} Sulimoff$';
 
 
-   ----------------------------------------------------------------------------
-   -- Набор именованных параметров.
-   --
+   -- Набор - map, именованных параметров.
    -- Значения хранятся в строковом представлении.
-   ----------------------------------------------------------------------------
    TYPE ParameterList_t IS TABLE OF VARCHAR2(2000)
-      INDEX BY VARCHAR2(100);
+        INDEX BY VARCHAR2(100);
 
 
-   ----------------------------------------------------------------------------
    -- Расширенное представление атрибута.
-   ----------------------------------------------------------------------------
    TYPE Attribute_Rec_t IS RECORD
    (
       name         VARCHAR2(100),
@@ -24,34 +19,27 @@ IS
       format_mask  VARCHAR2(50)
    );
 
-
    TYPE Attribute_List_t IS TABLE OF Attribute_Rec_t;
 
 
-   ----------------------------------------------------------------------------
    -- Каноническое текстовое представление UUID:
    -- xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-   ----------------------------------------------------------------------------
    SUBTYPE Uuid_t IS VARCHAR2(36);
 
-
-   ----------------------------------------------------------------------------
+   /* */ 
    FUNCTION get_Version
       RETURN VARCHAR2;
 
 
-   ----------------------------------------------------------------------------
    -- Проверка канонического текстового представления UUID.
    -- Версия UUID намеренно не ограничивается.
    -- NULL и строки другого формата возвращают FALSE.
-   ----------------------------------------------------------------------------
    FUNCTION is_Uuid (
       p_value IN VARCHAR2
    )
       RETURN BOOLEAN;
 
 
-   ----------------------------------------------------------------------------
    -- Проверяет и нормализует простой Oracle identifier.
    --
    -- Разрешены только неприведённые к кавычкам ASCII-имена текущей схемы,
@@ -59,7 +47,6 @@ IS
    -- quoted identifiers и фрагменты SQL запрещены.
    --
    -- Возвращает имя в uppercase. При ошибке поднимает ORA-20010.
-   ----------------------------------------------------------------------------
    FUNCTION simple_Sql_Name (
       p_value IN VARCHAR2,
       p_kind  IN VARCHAR2 DEFAULT 'SQL identifier'
@@ -67,59 +54,51 @@ IS
       RETURN VARCHAR2;
 
 
-   ----------------------------------------------------------------------------
    -- ParameterList_t -> Attribute_List_t.
    --
    -- ParameterList_t содержит только строковые значения, поэтому
    -- data_type заполняется значением 'string'.
-   ----------------------------------------------------------------------------
    FUNCTION to_Attribute_List (
       p_parameters IN ParameterList_t
    )
       RETURN Attribute_List_t;
 
 
-   ----------------------------------------------------------------------------
+   /* */
    FUNCTION to_Bool (
       p_value IN PLS_INTEGER
    )
       RETURN BOOLEAN;
 
-
-   ----------------------------------------------------------------------------
+   /* */
    FUNCTION to_Number (
       p_value IN BOOLEAN
    )
       RETURN PLS_INTEGER;
 
-
-   ----------------------------------------------------------------------------
+   /* */
    FUNCTION to_Char (
       p_value IN BOOLEAN
    )
       RETURN VARCHAR2;
 
-
-   ----------------------------------------------------------------------------
+   /* */
    FUNCTION to_Bool (
       p_value IN VARCHAR2
    )
       RETURN BOOLEAN;
 
-
-   ----------------------------------------------------------------------------
+   /* */
    FUNCTION to_Money (
       p_value IN VARCHAR2
    )
       RETURN NUMBER;
 
 
-   ----------------------------------------------------------------------------
    -- UUID version 7 согласно RFC 9562.
    --
    -- Первые 48 бит содержат Unix timestamp в миллисекундах UTC.
    -- Остальные биты, кроме version/variant, заполняются случайными данными.
-   ----------------------------------------------------------------------------
    FUNCTION uuid_V7
       RETURN Uuid_t;
 
@@ -140,8 +119,7 @@ IS
       RETURN VERSION;
    END get_Version;
 
-
-   ----------------------------------------------------------------------------
+   /* */
    FUNCTION is_Uuid (
       p_value IN VARCHAR2
    )
@@ -160,7 +138,7 @@ IS
    END is_Uuid;
 
 
-   ----------------------------------------------------------------------------
+   /* */
    FUNCTION simple_Sql_Name (
       p_value IN VARCHAR2,
       p_kind  IN VARCHAR2 DEFAULT 'SQL identifier'
@@ -188,6 +166,7 @@ IS
       END IF;
 
       RETURN DBMS_ASSERT.simple_sql_name(l_value);
+      
    END simple_Sql_Name;
 
 
@@ -342,12 +321,10 @@ IS
    END to_Money;
 
 
-   ----------------------------------------------------------------------------
    -- NUMBER -> hexadecimal string fixed width.
    --
    -- Нужна только внутри uuid_V7. Реализация не зависит от NLS и
    -- поддерживаемых TO_CHAR number format elements.
-   ----------------------------------------------------------------------------
    FUNCTION number_To_Hex (
       p_value IN NUMBER,
       p_width IN PLS_INTEGER
@@ -368,28 +345,22 @@ IS
 
       FOR i IN 1 .. p_width LOOP
 
-         l_digit := MOD(l_value, 16);
-
-         l_result :=
-              SUBSTR(cHex, l_digit + 1, 1)
-           || l_result;
-
-         l_value := TRUNC(l_value / 16);
+         l_digit  := MOD(l_value, 16);
+         l_result := SUBSTR(cHex, l_digit + 1, 1)  || l_result;
+         l_value  := TRUNC(l_value / 16);
 
       END LOOP;
-
 
       IF l_value <> 0 THEN
          RAISE VALUE_ERROR;
       END IF;
-
 
       RETURN l_result;
 
    END number_To_Hex;
 
 
-   ----------------------------------------------------------------------------
+   /* */
    FUNCTION uuid_V7
       RETURN Uuid_t
    IS
