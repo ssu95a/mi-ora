@@ -61,6 +61,15 @@ SHOW ERRORS PACKAGE BODY MI_Item_Result_Api
 
 
 PROMPT ------------------------------------------------------------
+PROMPT Business API packages
+PROMPT ------------------------------------------------------------
+
+@ddl/mi_0600/packages/MI_0600_Api.sql
+SHOW ERRORS PACKAGE MI_0600_Api
+SHOW ERRORS PACKAGE BODY MI_0600_Api
+
+
+PROMPT ------------------------------------------------------------
 PROMPT Views
 PROMPT ------------------------------------------------------------
 
@@ -68,11 +77,12 @@ PROMPT ------------------------------------------------------------
 SHOW ERRORS VIEW V_MI_0007
 
 
-/*
-   Triggers phase is currently empty. Add every future trigger SQL file here
-   in dependency order; tools/apply-code.cmd will reject an incomplete
-   manifest.
-*/
+PROMPT ------------------------------------------------------------
+PROMPT Triggers
+PROMPT ------------------------------------------------------------
+
+@ddl/mi_0600/triggers/T_AU_MI_REQ__0600_SENT.sql
+SHOW ERRORS TRIGGER T_AU_MI_REQ__0600_SENT
 
 PROMPT ============================================================
 PROMPT MI stored code applied
