@@ -1,7 +1,9 @@
 CREATE OR REPLACE PACKAGE MI_0607_Api
 IS
 
-   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.2} {14.11.2026} Sulimoff$';
+   /* MI-edo. DOCUMENT_RECEIVED вида сведений 607 */
+
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.1.0} {14.11.2026} Sulimoff$';
 
 
    RET_FAIL               CONSTANT PLS_INTEGER := -1;
@@ -50,7 +52,7 @@ IS
       p_doc_date          IN  RSD_BASES.DOCDATE%TYPE,
 
       p_file_name         IN  RSD_BASES.FILE_NAME%TYPE,
-      p_file_body         IN  BLOB,
+      p_file_body         IN  MI_0600.BZIP_DATA%TYPE,
 
       p_req_id            OUT MI_REQ.REQ_ID%TYPE,
       p_itm_id            OUT MI_0600.ITM_ID%TYPE,
@@ -68,8 +70,8 @@ END MI_0607_Api;
 CREATE OR REPLACE PACKAGE BODY MI_0607_Api
 IS
 
-
    cLogger CONSTANT VARCHAR2(64) := 'mi.0607';
+   cInfId  CONSTANT MI_REQ.INF_ID%TYPE := 607;
 
    /* глобальный логгер */
    g_log CONSTANT MI_Logger_T := MI_Logger_T( p_logger_name  => cLogger, p_package_name => $$PLSQL_UNIT );
@@ -81,6 +83,22 @@ IS
    BEGIN
       RETURN VERSION;
    END get_Version;
+
+
+   /* Бросает именованную technical error через общий result context. */
+   PROCEDURE raise_Technical_Error (
+      p_code     IN VARCHAR2,
+      p_info     IN VARCHAR2,
+      p_details  IN CLOB DEFAULT NULL
+   )
+   IS
+   BEGIN
+      MI_ResultCtx.raise_Error(
+         p_code    => p_code,
+         p_info    => p_info,
+         p_details => p_details
+      );
+   END raise_Technical_Error;
 
 
    /* */
@@ -120,7 +138,14 @@ IS
              ITM_ID = p_itm_id;
 
       IF SQL%ROWCOUNT <> 1 THEN
-         RAISE_APPLICATION_ERROR( -20960, 'MI_0600 result update failed: itm_id=' || p_itm_id || ', rows=' || SQL%ROWCOUNT );
+         raise_Technical_Error(
+            p_code => 'MI_0607_ITEM_RESULT_NOT_UPDATED',
+            p_info =>
+                  'MI_0600 result update failed: itm_id='
+               || p_itm_id
+               || ', rows='
+               || SQL%ROWCOUNT
+         );
       END IF;
       
    END set_Item_Result;
@@ -130,41 +155,46 @@ IS
    FUNCTION find_Existing (
       p_journal_name  IN  MI_0600.CZIP_NAME%TYPE,
 
-      p_req_id        OUT MI_REQ.REQ_ID%TYPE,
-      p_itm_id        OUT MI_0600.ITM_ID%TYPE,
-      p_ires_code     OUT MI_0600.IRES_CODE%TYPE,
-      p_error_code    OUT MI_0600.ERROR_CODE%TYPE
+      p_req_id         OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id         OUT MI_0600.ITM_ID%TYPE,
+      p_ires_code      OUT MI_0600.IRES_CODE%TYPE,
+      p_error_code     OUT MI_0600.ERROR_CODE%TYPE,
+      p_correlation_id OUT MI_REQ.CORRELATION_ID%TYPE
    )
       RETURN BOOLEAN
    IS
    BEGIN
-      p_req_id     := NULL;
-      p_itm_id     := NULL;
-      p_ires_code  := NULL;
-      p_error_code := NULL;
+      p_req_id         := NULL;
+      p_itm_id         := NULL;
+      p_ires_code      := NULL;
+      p_error_code     := NULL;
+      p_correlation_id := NULL;
 
       SELECT r.REQ_ID,
              i.ITM_ID,
              i.IRES_CODE,
-             i.ERROR_CODE
+             i.ERROR_CODE,
+             r.CORRELATION_ID
         INTO p_req_id,
              p_itm_id,
              p_ires_code,
-             p_error_code
+             p_error_code,
+             p_correlation_id
         FROM MI_REQ r
         JOIN MI_0600 i
           ON i.REQ_ID = r.REQ_ID
-       WHERE r.INF_ID = 607
+       WHERE r.INF_ID = cInfId
          AND i.CZIP_NAME = p_journal_name;
 
       RETURN TRUE;
 
    EXCEPTION
       WHEN NO_DATA_FOUND THEN
-         p_req_id     := NULL;
-         p_itm_id     := NULL;
-         p_ires_code  := NULL;
-         p_error_code := NULL;
+         p_req_id         := NULL;
+         p_itm_id         := NULL;
+         p_ires_code      := NULL;
+         p_error_code     := NULL;
+         p_correlation_id := NULL;
 
          RETURN FALSE;
    END find_Existing;
@@ -181,7 +211,7 @@ IS
       p_doc_date          IN  RSD_BASES.DOCDATE%TYPE,
 
       p_file_name         IN  RSD_BASES.FILE_NAME%TYPE,
-      p_file_body         IN  BLOB,
+      p_file_body         IN  MI_0600.BZIP_DATA%TYPE,
 
       p_req_id            OUT MI_REQ.REQ_ID%TYPE,
       p_itm_id            OUT MI_0600.ITM_ID%TYPE,
@@ -197,13 +227,13 @@ IS
       l_doc_type            RSD_BASES.FILE_TYPE%TYPE;
       l_file_name           RSD_BASES.FILE_NAME%TYPE;
       l_journal_name        MI_0600.CZIP_NAME%TYPE;
+      l_file_size           MI_0600.IZIP_SIZE%TYPE;
 
       l_request_result      MI_ResultCtx.exec_Result_t;
 
       l_req_id              MI_REQ.REQ_ID%TYPE;
       l_itm_id              MI_0600.ITM_ID%TYPE;
 
-      l_request_uuid        MI_REQ.EXTERNAL_UUID%TYPE;
       l_item_uuid           MI_0600.EXTERNAL_UUID%TYPE;
       l_correlation_id      MI_REQ.CORRELATION_ID%TYPE;
 
@@ -219,54 +249,76 @@ IS
       l_own_savepoint       DCL.T_Name;
       l_business_savepoint  DCL.T_Name;
 
-      l_sqlcode             PLS_INTEGER;
       l_sqlerrm             VARCHAR2(2000);
+      l_rollback_ok         BOOLEAN;
 
       l_log                 MI_Logger_T := g_log;
 
 
-      PROCEDURE rollback_Savepoint (
+      FUNCTION rollback_Savepoint (
          p_name IN OUT DCL.T_Name
       )
+         RETURN BOOLEAN
       IS
-         l_name         DCL.T_Name;
-         l_rolled_back  BOOLEAN;
+         l_name    DCL.T_Name;
+         l_result  BOOLEAN;
       BEGIN
          IF p_name IS NULL THEN
-            RETURN;
+            RETURN TRUE;
          END IF;
 
          l_name := p_name;
          p_name := NULL;
 
-         l_rolled_back := DCL.RollBack(l_name);
+         l_result := DCL.RollBack(l_name);
 
-         IF NOT l_rolled_back THEN
-            l_log.warn(
-               p_message_text => 'DCL rollback was not performed',
-               p_action_code  => 'rollback_skipped'
+         RETURN l_result IS NOT NULL AND l_result;
+
+      EXCEPTION
+         WHEN OTHERS THEN
+            l_log.error(
+               p_message_text => 'DCL rollback failed',
+               p_action_code  => 'rollback',
+               p_details_text =>
+                  TO_CLOB(
+                        'savepoint='
+                     || l_name
+                     || '; error='
+                     || SQLERRM
+                  )
             );
-         END IF;
+
+            RETURN FALSE;
       END rollback_Savepoint;
 
 
-      PROCEDURE rollback_Own_Work
+      FUNCTION rollback_Own_Work
+         RETURN BOOLEAN
       IS
+         l_result BOOLEAN;
       BEGIN
-         rollback_Savepoint(l_own_savepoint);
+         l_result := rollback_Savepoint(l_own_savepoint);
+
          /*
             После rollback до внешнего savepoint внутренний savepoint
             гарантированно больше использовать нельзя.
          */
          l_business_savepoint := NULL;
-         
+
+         RETURN l_result IS NOT NULL AND l_result;
       END rollback_Own_Work;
 
 
       PROCEDURE rollback_Business_Work
       IS
       BEGIN
-         rollback_Savepoint(l_business_savepoint);
+         IF NOT rollback_Savepoint(l_business_savepoint) THEN
+            raise_Technical_Error(
+               p_code => 'MI_0607_BUSINESS_ROLLBACK_FAILED',
+               p_info =>
+                  'Не удалось откатить изменения RSD; требуется полный rollback транзакции'
+            );
+         END IF;
       END rollback_Business_Work;
 
 
@@ -303,10 +355,10 @@ IS
             );
 
          l_log.context(
-            p_inf_id         => 607,
+            p_inf_id         => cInfId,
             p_req_id         => l_req_id,
             p_itm_id         => l_itm_id,
-            p_correlation_id => p_correlation_id
+            p_correlation_id => l_correlation_id
          );
 
          l_log.info(
@@ -315,6 +367,45 @@ IS
             p_details_text => TO_CLOB(p_ret_info)
          );
       END return_Existing;
+
+
+      PROCEDURE return_Business_Failure (
+         p_ret_code_value  IN PLS_INTEGER,
+         p_error_code      IN MI_0600.ERROR_CODE%TYPE,
+         p_info            IN VARCHAR2,
+         p_log_message     IN VARCHAR2,
+         p_action_code     IN VARCHAR2
+      )
+      IS
+      BEGIN
+         rollback_Business_Work;
+
+         set_Item_Result(
+            p_itm_id     => l_itm_id,
+            p_ires_code  => MI_Item_Result_Api.RESPONSE_FAIL,
+            p_error_code => p_error_code,
+            p_info       => TO_CLOB(p_info)
+         );
+
+         /* RSD_BASES откатан и его identifier больше не существует. */
+         p_base_id      := NULL;
+         p_file_type    := l_file_type;
+         p_parse_result := NULL;
+
+         p_ret_code := p_ret_code_value;
+         p_ret_info := SUBSTR(p_info, 1, 4000);
+
+         l_log.warn(
+            p_message_text => p_log_message,
+            p_action_code  => p_action_code,
+            p_details_text => TO_CLOB(p_ret_info)
+         );
+
+         l_log.exit_f(
+            p_function_name => 'process_Document_Received',
+            p_message_text  => p_error_code
+         );
+      END return_Business_Failure;
 
 
    BEGIN
@@ -330,20 +421,28 @@ IS
       p_ret_code     := RET_FAIL;
       p_ret_info     := NULL;
 
+      l_log.context(
+         p_inf_id         => cInfId,
+         p_correlation_id => p_correlation_id
+      );
 
-      -- Validate transport contract before any DML.
+      /* Проверяем transport contract до любого DML. */
       IF p_message_uuid IS NULL OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
       THEN
-         RAISE_APPLICATION_ERROR(  -20961, 'DOCUMENT_RECEIVED.message_uuid must be a valid UUID' );
+         raise_Technical_Error(
+            p_code => 'MI_0607_INVALID_MESSAGE_UUID',
+            p_info => 'DOCUMENT_RECEIVED.message_uuid must be a valid UUID'
+         );
       END IF;
 
 
       IF p_original_req_uuid IS NOT NULL
          AND NOT MI_Utils.is_Uuid(TRIM(p_original_req_uuid))
       THEN
-         RAISE_APPLICATION_ERROR(
-            -20962,
-            'DOCUMENT_RECEIVED.original_request_uuid must be a valid UUID'
+         raise_Technical_Error(
+            p_code => 'MI_0607_INVALID_ORIGINAL_UUID',
+            p_info =>
+               'DOCUMENT_RECEIVED.original_request_uuid must be a valid UUID'
          );
       END IF;
 
@@ -351,9 +450,9 @@ IS
       IF p_correlation_id IS NOT NULL
          AND NOT MI_Utils.is_Uuid(TRIM(p_correlation_id))
       THEN
-         RAISE_APPLICATION_ERROR(
-            -20963,
-            'DOCUMENT_RECEIVED.correlation_id must be a valid UUID'
+         raise_Technical_Error(
+            p_code => 'MI_0607_INVALID_CORRELATION_UUID',
+            p_info => 'DOCUMENT_RECEIVED.correlation_id must be a valid UUID'
          );
       END IF;
 
@@ -361,9 +460,9 @@ IS
       IF p_task_id IS NULL
          OR NOT MI_Utils.is_Uuid(TRIM(p_task_id))
       THEN
-         RAISE_APPLICATION_ERROR(
-            -20964,
-            'DOCUMENT_RECEIVED.taskId must be a valid UUID'
+         raise_Technical_Error(
+            p_code => 'MI_0607_INVALID_TASK_ID',
+            p_info => 'DOCUMENT_RECEIVED.taskId must be a valid UUID'
          );
       END IF;
 
@@ -371,20 +470,21 @@ IS
       l_doc_type :=
          UPPER(TRIM(p_doc_type));
 
-      IF l_doc_type NOT IN ('UNO', 'UPO') THEN
-         RAISE_APPLICATION_ERROR(
-            -20965,
-               'Unsupported DOCUMENT_RECEIVED.docType='
-            || NVL(l_doc_type, '<NULL>')
-            || '; expected UNO or UPO'
+      IF l_doc_type IS NULL OR l_doc_type NOT IN ('UNO', 'UPO') THEN
+         raise_Technical_Error(
+            p_code => 'MI_0607_INVALID_DOC_TYPE',
+            p_info =>
+                  'Unsupported DOCUMENT_RECEIVED.docType='
+               || NVL(l_doc_type, '<NULL>')
+               || '; expected UNO or UPO'
          );
       END IF;
 
 
       IF p_doc_date IS NULL THEN
-         RAISE_APPLICATION_ERROR(
-            -20966,
-            'DOCUMENT_RECEIVED.docDate must not be NULL'
+         raise_Technical_Error(
+            p_code => 'MI_0607_DOC_DATE_REQUIRED',
+            p_info => 'DOCUMENT_RECEIVED.docDate must not be NULL'
          );
       END IF;
 
@@ -393,22 +493,28 @@ IS
          TRIM(p_file_name);
 
       IF l_file_name IS NULL THEN
-         RAISE_APPLICATION_ERROR(
-            -20967,
-            'DOCUMENT_RECEIVED.fileName must not be empty'
+         raise_Technical_Error(
+            p_code => 'MI_0607_FILE_NAME_REQUIRED',
+            p_info => 'DOCUMENT_RECEIVED.fileName must not be empty'
          );
       END IF;
 
 
-      IF p_file_body IS NULL
-         OR DBMS_LOB.getlength(p_file_body) = 0
-      THEN
-         RAISE_APPLICATION_ERROR(
-            -20968,
-            'DOCUMENT_RECEIVED.file must not be empty'
+      IF p_file_body IS NULL THEN
+         raise_Technical_Error(
+            p_code => 'MI_0607_FILE_REQUIRED',
+            p_info => 'DOCUMENT_RECEIVED.file must not be empty'
          );
       END IF;
 
+      l_file_size := DBMS_LOB.getlength(p_file_body);
+
+      IF l_file_size = 0 THEN
+         raise_Technical_Error(
+            p_code => 'MI_0607_FILE_REQUIRED',
+            p_info => 'DOCUMENT_RECEIVED.file must not be empty'
+         );
+      END IF;
 
       l_journal_name :=
          journal_Name(p_message_uuid);
@@ -418,11 +524,12 @@ IS
       -- Idempotent replay before any DML.
       ------------------------------------------------------------------------
       IF find_Existing(
-            p_journal_name => l_journal_name,
-            p_req_id       => l_req_id,
-            p_itm_id       => l_itm_id,
-            p_ires_code    => l_existing_ires,
-            p_error_code   => l_existing_error
+            p_journal_name   => l_journal_name,
+            p_req_id         => l_req_id,
+            p_itm_id         => l_itm_id,
+            p_ires_code      => l_existing_ires,
+            p_error_code     => l_existing_error,
+            p_correlation_id => l_correlation_id
          )
       THEN
          return_Existing;
@@ -445,13 +552,20 @@ IS
 
       DCL.SavePoint(l_own_savepoint);
 
+      IF l_own_savepoint IS NULL THEN
+         raise_Technical_Error(
+            p_code => 'MI_0607_SAVEPOINT_UNAVAILABLE',
+            p_info => 'DCL did not create the operation savepoint'
+         );
+      END IF;
+
 
       ------------------------------------------------------------------------
       -- 1. MI_REQ: durable integration journal header.
       ------------------------------------------------------------------------
       l_request_result :=
          MI_Request_Api.create_Request(
-            p_inf_id            => 607,
+            p_inf_id            => cInfId,
             p_correlation_id    => p_correlation_id,
             p_original_req_uuid => p_original_req_uuid,
             p_ctaxreq_id        => TRIM(p_task_id),
@@ -466,7 +580,13 @@ IS
 
 
       IF MI_ResultCtx.is_Failed(l_request_result) THEN
-         MI_ResultCtx.raise_Error(l_request_result);
+         MI_ResultCtx.raise_Error(
+            MI_ResultCtx.wrap_Exception(
+               p_cause => l_request_result,
+               p_code  => 'MI_0607_REQUEST_HEADER_FAILED',
+               p_info  => 'Не удалось создать MI_REQ для DOCUMENT_RECEIVED'
+            )
+         );
       END IF;
 
 
@@ -475,17 +595,14 @@ IS
             l_request_result.parameters('req_id')
          );
 
-      l_request_uuid :=
-         l_request_result.parameters('external_uuid');
-
       l_correlation_id :=
          l_request_result.parameters('correlation_id');
 
 
       IF l_req_id IS NULL THEN
-         RAISE_APPLICATION_ERROR(
-            -20969,
-            'MI_Request_Api.create_Request returned NULL req_id'
+         raise_Technical_Error(
+            p_code => 'MI_0607_REQUEST_ID_MISSING',
+            p_info => 'MI_Request_Api.create_Request returned NULL req_id'
          );
       END IF;
 
@@ -520,7 +637,7 @@ IS
 
          l_journal_name,
          p_file_body,
-         DBMS_LOB.getlength(p_file_body),
+         l_file_size,
          1,
 
          0,
@@ -549,7 +666,7 @@ IS
 
 
       l_log.context(
-         p_inf_id         => 607,
+         p_inf_id         => cInfId,
          p_req_id         => l_req_id,
          p_itm_id         => l_itm_id,
          p_correlation_id => l_correlation_id
@@ -568,6 +685,13 @@ IS
       -- Business failure must not remove MI_REQ / MI_0600.
       ------------------------------------------------------------------------
       DCL.SavePoint(l_business_savepoint);
+
+      IF l_business_savepoint IS NULL THEN
+         raise_Technical_Error(
+            p_code => 'MI_0607_BUSINESS_SAVEPOINT_UNAVAILABLE',
+            p_info => 'DCL did not create the RSD business savepoint'
+         );
+      END IF;
 
 
       ------------------------------------------------------------------------
@@ -591,51 +715,13 @@ IS
       -- CreateBase business failure.
       ------------------------------------------------------------------------
       IF NVL(l_base_id, 0) = 0 THEN
-         rollback_Business_Work;
-
-
-         set_Item_Result(
-            p_itm_id     => l_itm_id,
-            p_ires_code  => RET_FAIL,
-            p_error_code => 'CREATE_BASE_FAILED',
-            p_info       =>
-               TO_CLOB(
-                  NVL(
-                     l_err,
-                     'RD_PKG.CreateBase failed'
-                  )
-               )
-         );
-
-
-         p_base_id      := NULL;
-         p_file_type    := l_file_type;
-         p_parse_result := NULL;
-
-         p_ret_code :=
-            RET_CREATE_BASE_FAILED;
-
-         p_ret_info :=
-            SUBSTR(
-               NVL(
-                  l_err,
-                  'RD_PKG.CreateBase failed'
-               ),
-               1,
-               4000
-            );
-
-
-         l_log.warn(
-            p_message_text => 'RD_PKG.CreateBase rejected DOCUMENT_RECEIVED',
-            p_action_code  => 'create_base_failed',
-            p_details_text => TO_CLOB(p_ret_info)
-         );
-
-
-         l_log.exit_f(
-            p_function_name => 'process_Document_Received',
-            p_message_text  => 'CREATE_BASE_FAILED'
+         return_Business_Failure(
+            p_ret_code_value => RET_CREATE_BASE_FAILED,
+            p_error_code     => 'CREATE_BASE_FAILED',
+            p_info           => NVL(l_err, 'RD_PKG.CreateBase failed'),
+            p_log_message    =>
+               'RD_PKG.CreateBase rejected DOCUMENT_RECEIVED',
+            p_action_code    => 'create_base_failed'
          );
 
          RETURN;
@@ -652,55 +738,16 @@ IS
       IF l_file_type IS NULL
          OR l_file_type <> l_doc_type
       THEN
-         rollback_Business_Work;
-
-
-         set_Item_Result(
-            p_itm_id     => l_itm_id,
-            p_ires_code  => RET_FAIL,
-            p_error_code => 'DOC_TYPE_MISMATCH',
-            p_info       =>
-               TO_CLOB(
-                     'DOCUMENT_RECEIVED docType='
-                  || l_doc_type
-                  || ', detected fileType='
-                  || NVL(l_file_type, '<NULL>')
-               )
-         );
-
-
-         /*
-            RSD_BASES was rolled back, therefore p_base_id must not expose
-            an identifier of a row that no longer exists.
-         */
-         p_base_id      := NULL;
-         p_file_type    := l_file_type;
-         p_parse_result := NULL;
-
-         p_ret_code :=
-            RET_DOC_TYPE_MISMATCH;
-
-         p_ret_info :=
-            SUBSTR(
+         return_Business_Failure(
+            p_ret_code_value => RET_DOC_TYPE_MISMATCH,
+            p_error_code     => 'DOC_TYPE_MISMATCH',
+            p_info           =>
                   'DOCUMENT_RECEIVED docType='
                || l_doc_type
                || ', detected fileType='
                || NVL(l_file_type, '<NULL>'),
-               1,
-               4000
-            );
-
-
-         l_log.warn(
-            p_message_text => 'DOCUMENT_RECEIVED docType mismatch',
-            p_action_code  => 'doc_type_mismatch',
-            p_details_text => TO_CLOB(p_ret_info)
-         );
-
-
-         l_log.exit_f(
-            p_function_name => 'process_Document_Received',
-            p_message_text  => 'DOC_TYPE_MISMATCH'
+            p_log_message    => 'DOCUMENT_RECEIVED docType mismatch',
+            p_action_code    => 'doc_type_mismatch'
          );
 
          RETURN;
@@ -717,12 +764,13 @@ IS
 
 
       IF SQL%ROWCOUNT <> 1 THEN
-         RAISE_APPLICATION_ERROR(
-            -20970,
-               'RSD_BASES metadata update failed: id='
-            || l_base_id
-            || ', rows='
-            || SQL%ROWCOUNT
+         raise_Technical_Error(
+            p_code => 'MI_0607_BASE_NOT_UPDATED',
+            p_info =>
+                  'RSD_BASES metadata update failed: id='
+               || l_base_id
+               || ', rows='
+               || SQL%ROWCOUNT
          );
       END IF;
 
@@ -746,55 +794,13 @@ IS
       -- Parsing business failure.
       ------------------------------------------------------------------------
       IF l_parse_result IS NULL THEN
-         rollback_Business_Work;
-
-
-         set_Item_Result(
-            p_itm_id     => l_itm_id,
-            p_ires_code  => RET_FAIL,
-            p_error_code => 'PARSING_FAILED',
-            p_info       =>
-               TO_CLOB(
-                  NVL(
-                     l_err,
-                     'RD_PKG.Parsing failed'
-                  )
-               )
-         );
-
-
-         /*
-            RSD_BASES and all RSD_OUTFILES produced after the business
-            savepoint are rolled back.
-         */
-         p_base_id      := NULL;
-         p_file_type    := l_file_type;
-         p_parse_result := NULL;
-
-         p_ret_code :=
-            RET_PARSING_FAILED;
-
-         p_ret_info :=
-            SUBSTR(
-               NVL(
-                  l_err,
-                  'RD_PKG.Parsing failed'
-               ),
-               1,
-               4000
-            );
-
-
-         l_log.warn(
-            p_message_text => 'RD_PKG.Parsing rejected DOCUMENT_RECEIVED',
-            p_action_code  => 'parsing_failed',
-            p_details_text => TO_CLOB(p_ret_info)
-         );
-
-
-         l_log.exit_f(
-            p_function_name => 'process_Document_Received',
-            p_message_text  => 'PARSING_FAILED'
+         return_Business_Failure(
+            p_ret_code_value => RET_PARSING_FAILED,
+            p_error_code     => 'PARSING_FAILED',
+            p_info           => NVL(l_err, 'RD_PKG.Parsing failed'),
+            p_log_message    =>
+               'RD_PKG.Parsing rejected DOCUMENT_RECEIVED',
+            p_action_code    => 'parsing_failed'
          );
 
          RETURN;
@@ -806,7 +812,7 @@ IS
       ------------------------------------------------------------------------
       set_Item_Result(
          p_itm_id     => l_itm_id,
-         p_ires_code  => RET_OK,
+         p_ires_code  => MI_Item_Result_Api.RESPONSE_OK,
          p_error_code => NULL,
          p_info       =>
             CASE
@@ -857,20 +863,32 @@ IS
       -- header/item and return the committed existing journal.
       ------------------------------------------------------------------------
       WHEN DUP_VAL_ON_INDEX THEN
-         l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
 
+         l_rollback_ok := rollback_Own_Work;
 
-         rollback_Own_Work;
+         IF NOT l_rollback_ok THEN
+            raise_Technical_Error(
+               p_code    => 'MI_0607_ROLLBACK_FAILED',
+               p_info    =>
+                  'Не удалось откатить собственную работу после unique conflict',
+               p_details => TO_CLOB(l_sqlerrm)
+            );
+         END IF;
 
 
-         IF find_Existing(
-               p_journal_name => l_journal_name,
-               p_req_id       => l_req_id,
-               p_itm_id       => l_itm_id,
-               p_ires_code    => l_existing_ires,
-               p_error_code   => l_existing_error
-            )
+         IF INSTR(
+               UPPER(l_sqlerrm),
+               'UK_MI_0600__CZIP_NAME'
+            ) > 0
+            AND find_Existing(
+                   p_journal_name   => l_journal_name,
+                   p_req_id         => l_req_id,
+                   p_itm_id         => l_itm_id,
+                   p_ires_code      => l_existing_ires,
+                   p_error_code     => l_existing_error,
+                   p_correlation_id => l_correlation_id
+                )
          THEN
             return_Existing;
             RETURN;
@@ -895,11 +913,9 @@ IS
       -- classification at the integration layer.
       ------------------------------------------------------------------------
       WHEN OTHERS THEN
-         l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
 
-
-         rollback_Own_Work;
+         l_rollback_ok := rollback_Own_Work;
 
 
          l_log.error(
@@ -910,6 +926,9 @@ IS
                      l_sqlerrm
                   || CHR(10)
                   || DBMS_UTILITY.format_error_backtrace
+                  || CHR(10)
+                  || 'own_rollback='
+                  || MI_Utils.to_Char(l_rollback_ok)
                )
          );
 
