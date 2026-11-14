@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_0606_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.0.0} {14.11.2026} Sulimoff$';
+      '$Id: {1.1.0} {15.11.2026} Sulimoff$';
 
 
    ---------------------------------------------------------------------------
@@ -15,6 +15,13 @@ IS
    RET_UNSUPPORTED_FILE_TYPE CONSTANT PLS_INTEGER :=  3;
    RET_EXISTS                CONSTANT PLS_INTEGER :=  4;
    RET_ALREADY_APPLIED       CONSTANT PLS_INTEGER :=  5;
+   RET_OTHER_APPLIED         CONSTANT PLS_INTEGER :=  6;
+
+   /*
+      RET_* describes expected source/protocol outcomes at the JDBC boundary.
+      DB, transaction and internal-contract failures are raised as exceptions;
+      the caller must roll back the whole transaction.
+   */
 
 
    FUNCTION get_Version
@@ -55,6 +62,7 @@ IS
       Возвращает данные SEND_DOCUMENT для уже зарегистрированного request.
 
       FILE_BODY является snapshot, сохранённым в MI_0600.BZIP_DATA.
+      Mutable RSD_OUTFILES при retry не перечитывается.
    */
    PROCEDURE prepare_Send_Document (
       p_req_id       IN  MI_REQ.REQ_ID%TYPE,
@@ -159,13 +167,13 @@ CREATE OR REPLACE PACKAGE BODY MI_0606_Api
 IS
 
    cLogger CONSTANT VARCHAR2(64) := 'mi.0606';
+   cInfId  CONSTANT MI_REQ.INF_ID%TYPE := 606;
 
+   cFileTypePb2 CONSTANT RSD_OUTFILES.FILE_TYPE%TYPE := 'PB2';
+   cDocTypePb2  CONSTANT VARCHAR2(100) := 'IMPOSSIBILITY_RESPONSE';
 
-   g_log CONSTANT MI_Logger_T :=
-      MI_Logger_T(
-         p_logger_name  => cLogger,
-         p_package_name => $$PLSQL_UNIT
-      );
+   /* Глобальный logger для простых операций без локального context. */
+   g_log CONSTANT MI_Logger_T := MI_Logger_T( p_logger_name => cLogger, p_package_name => $$PLSQL_UNIT );
 
 
    ---------------------------------------------------------------------------
@@ -175,6 +183,79 @@ IS
    BEGIN
       RETURN VERSION;
    END get_Version;
+
+
+   /* Бросает именованную technical error через общий result context. */
+   PROCEDURE raise_Technical_Error (
+      p_code     IN VARCHAR2,
+      p_info     IN VARCHAR2,
+      p_details  IN CLOB DEFAULT NULL
+   )
+   IS
+   BEGIN
+      MI_ResultCtx.raise_Error(
+         p_code    => p_code,
+         p_info    => p_info,
+         p_details => p_details
+      );
+   END raise_Technical_Error;
+
+
+   /*
+      DCL.RollBack may return FALSE instead of raising an exception.
+      A caller may return RET_* only after a confirmed local rollback.
+   */
+   FUNCTION rollback_Savepoint (
+      p_name IN OUT DCL.T_Name
+   )
+      RETURN BOOLEAN
+   IS
+      l_name    DCL.T_Name;
+      l_result  BOOLEAN;
+   BEGIN
+      IF p_name IS NULL THEN
+         RETURN TRUE;
+      END IF;
+
+      l_name := p_name;
+      p_name := NULL;
+
+      l_result := DCL.RollBack(l_name);
+
+      RETURN l_result IS NOT NULL AND l_result;
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         g_log.error(
+            p_message_text => 'DCL rollback failed',
+            p_action_code  => 'rollback',
+            p_details_text =>
+               TO_CLOB(
+                     'savepoint='
+                  || l_name
+                  || '; error='
+                  || SQLERRM
+               )
+         );
+
+         RETURN FALSE;
+   END rollback_Savepoint;
+
+
+   PROCEDURE rollback_Or_Raise (
+      p_name  IN OUT DCL.T_Name,
+      p_code  IN     VARCHAR2,
+      p_info  IN     VARCHAR2
+   )
+   IS
+   BEGIN
+      IF NOT rollback_Savepoint(p_name) THEN
+         raise_Technical_Error(
+            p_code => p_code,
+            p_info => p_info
+         );
+      END IF;
+   END rollback_Or_Raise;
 
 
    ---------------------------------------------------------------------------
@@ -211,11 +292,12 @@ IS
          Подтверждённый business mapping.
 
          Остальные mappings должны быть добавлены после согласования
-         с разработчиком RD.
+         с разработчиком RD и после добавления в MI journal поля
+         для snapshot разрешённого protocol mapping.
       */
       RETURN
          CASE l_file_type
-            WHEN 'PB2' THEN 'IMPOSSIBILITY_RESPONSE'
+            WHEN cFileTypePb2 THEN cDocTypePb2
             ELSE NULL
          END;
    END map_Doc_Type;
@@ -274,11 +356,14 @@ IS
       );
 
 
-      IF l_warning <> DBMS_LOB.NO_WARNING THEN
-         RAISE_APPLICATION_ERROR(
-            -20971,
-               'CLOB to UTF-8 BLOB conversion warning='
-            || l_warning
+      IF l_warning IS NULL
+         OR l_warning <> DBMS_LOB.NO_WARNING
+      THEN
+         raise_Technical_Error(
+            p_code => 'MI_0606_CLOB_CONVERSION_WARNING',
+            p_info =>
+                  'CLOB to UTF-8 BLOB conversion warning='
+               || l_warning
          );
       END IF;
 
@@ -339,7 +424,7 @@ IS
         FROM MI_REQ r
         JOIN MI_0600 i
           ON i.REQ_ID = r.REQ_ID
-       WHERE r.INF_ID = 606
+       WHERE r.INF_ID = cInfId
          AND i.CZIP_NAME = l_journal_name;
 
 
@@ -391,35 +476,34 @@ IS
 
       l_savepoint_name  DCL.T_Name;
 
-      l_sqlcode         PLS_INTEGER;
       l_sqlerrm         VARCHAR2(2000);
+      l_rollback_ok     BOOLEAN;
 
       l_log             MI_Logger_T := g_log;
 
 
       ------------------------------------------------------------------------
-      PROCEDURE rollback_Own_Work
+      FUNCTION rollback_Own_Work
+         RETURN BOOLEAN
       IS
-         l_name         DCL.T_Name;
-         l_rolled_back  BOOLEAN;
       BEGIN
-         IF l_savepoint_name IS NULL THEN
-            RETURN;
-         END IF;
+         RETURN rollback_Savepoint(l_savepoint_name);
+      END rollback_Own_Work;
 
-         l_name           := l_savepoint_name;
-         l_savepoint_name := NULL;
 
-         l_rolled_back :=
-            DCL.RollBack(l_name);
-
-         IF NOT l_rolled_back THEN
-            l_log.warn(
-               p_message_text => 'DCL rollback was not performed',
-               p_action_code  => 'rollback_skipped'
+      ------------------------------------------------------------------------
+      PROCEDURE rollback_For_Result
+      IS
+      BEGIN
+         IF NOT rollback_Own_Work THEN
+            raise_Technical_Error(
+               p_code => 'MI_0606_ROLLBACK_FAILED',
+               p_info =>
+                  'Не удалось откатить собственную работу; '
+                  || 'требуется полный rollback транзакции'
             );
          END IF;
-      END rollback_Own_Work;
+      END rollback_For_Result;
 
 
       ------------------------------------------------------------------------
@@ -483,6 +567,13 @@ IS
 
       DCL.SavePoint(l_savepoint_name);
 
+      IF l_savepoint_name IS NULL THEN
+         raise_Technical_Error(
+            p_code => 'MI_0606_SAVEPOINT_UNAVAILABLE',
+            p_info => 'DCL did not create the capture savepoint'
+         );
+      END IF;
+
 
       ------------------------------------------------------------------------
       -- Источник блокируется до COMMIT / ROLLBACK вызывающего кода.
@@ -508,7 +599,7 @@ IS
 
       EXCEPTION
          WHEN NO_DATA_FOUND THEN
-            rollback_Own_Work;
+            rollback_For_Result;
 
             p_ret_code := RET_NO_DATA;
             p_ret_info :=
@@ -522,8 +613,10 @@ IS
       ------------------------------------------------------------------------
       -- После конкурентного capture строка уже могла сменить REC_STATE.
       ------------------------------------------------------------------------
-      IF TRIM(l_rec_state) <> '0' THEN
-         rollback_Own_Work;
+      IF l_rec_state IS NULL
+         OR TRIM(l_rec_state) <> '0'
+      THEN
+         rollback_For_Result;
 
 
          IF find_Existing_Source(
@@ -564,7 +657,7 @@ IS
 
 
       IF l_file_name IS NULL THEN
-         rollback_Own_Work;
+         rollback_For_Result;
 
          p_ret_code := RET_FAIL;
          p_ret_info := 'RSD_OUTFILES.FILENAME is empty';
@@ -576,7 +669,7 @@ IS
       IF l_task_id IS NULL
          OR NOT MI_Utils.is_Uuid(l_task_id)
       THEN
-         rollback_Own_Work;
+         rollback_For_Result;
 
          p_ret_code := RET_FAIL;
 
@@ -591,7 +684,7 @@ IS
       IF l_doc_key IS NULL
          OR NOT MI_Utils.is_Uuid(l_doc_key)
       THEN
-         rollback_Own_Work;
+         rollback_For_Result;
 
          p_ret_code := RET_FAIL;
 
@@ -616,7 +709,7 @@ IS
       IF l_doc_type IS NULL
          AND l_error_code IS NULL
       THEN
-         rollback_Own_Work;
+         rollback_For_Result;
 
          p_ret_code :=
             RET_UNSUPPORTED_FILE_TYPE;
@@ -630,6 +723,25 @@ IS
                1,
                4000
             );
+
+         RETURN;
+      END IF;
+
+
+      /*
+         The current physical journal can reproduce only the confirmed PB2
+         contract without rereading RSD_OUTFILES. Do not admit another mapping
+         until its resolved value has a dedicated snapshot field.
+      */
+      IF l_doc_type IS NULL
+         OR l_doc_type <> cDocTypePb2
+         OR l_error_code IS NOT NULL
+      THEN
+         rollback_For_Result;
+
+         p_ret_code := RET_UNSUPPORTED_FILE_TYPE;
+         p_ret_info :=
+            'FILE_TYPE mapping has no durable MI journal snapshot';
 
          RETURN;
       END IF;
@@ -656,7 +768,7 @@ IS
          l_payload_temp := TRUE;
 
       ELSE
-         rollback_Own_Work;
+         rollback_For_Result;
 
          p_ret_code := RET_FAIL;
          p_ret_info := 'RSD_OUTFILES contains no document body';
@@ -670,14 +782,20 @@ IS
       ------------------------------------------------------------------------
       l_request_result :=
          MI_Request_Api.create_Request(
-            p_inf_id        => 606,
+            p_inf_id        => cInfId,
             p_ctaxreq_id    => l_task_id,
             p_status_cd     => MI_Request_Api.STATUS_NEW
          );
 
 
       IF MI_ResultCtx.is_Failed(l_request_result) THEN
-         MI_ResultCtx.raise_Error(l_request_result);
+         MI_ResultCtx.raise_Error(
+            MI_ResultCtx.wrap_Exception(
+               p_cause => l_request_result,
+               p_code  => 'MI_0606_REQUEST_HEADER_FAILED',
+               p_info  => 'Не удалось создать MI_REQ для SEND_DOCUMENT'
+            )
+         );
       END IF;
 
 
@@ -691,9 +809,9 @@ IS
 
 
       IF l_req_id IS NULL THEN
-         RAISE_APPLICATION_ERROR(
-            -20972,
-            'MI_Request_Api.create_Request returned NULL req_id'
+         raise_Technical_Error(
+            p_code => 'MI_0606_REQUEST_ID_MISSING',
+            p_info => 'MI_Request_Api.create_Request returned NULL req_id'
          );
       END IF;
 
@@ -757,12 +875,13 @@ IS
 
 
       IF SQL%ROWCOUNT <> 1 THEN
-         RAISE_APPLICATION_ERROR(
-            -20973,
-               'RSD_OUTFILES state update failed: id='
-            || p_outfile_id
-            || ', rows='
-            || SQL%ROWCOUNT
+         raise_Technical_Error(
+            p_code => 'MI_0606_SOURCE_STATE_NOT_UPDATED',
+            p_info =>
+                  'RSD_OUTFILES state update failed: id='
+               || p_outfile_id
+               || ', rows='
+               || SQL%ROWCOUNT
          );
       END IF;
 
@@ -776,7 +895,7 @@ IS
 
 
       l_log.context(
-         p_inf_id         => 606,
+         p_inf_id         => cInfId,
          p_req_id         => l_req_id,
          p_itm_id         => l_itm_id,
          p_correlation_id => l_correlation_id
@@ -811,11 +930,8 @@ IS
 
    EXCEPTION
       WHEN OTHERS THEN
-         l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
-
-
-         rollback_Own_Work;
+         l_rollback_ok := rollback_Own_Work;
 
 
          IF l_payload_temp THEN
@@ -831,6 +947,9 @@ IS
                      l_sqlerrm
                   || CHR(10)
                   || DBMS_UTILITY.format_error_backtrace
+                  || CHR(10)
+                  || 'own_rollback='
+                  || MI_Utils.to_Char(l_rollback_ok)
                )
          );
 
@@ -854,7 +973,7 @@ IS
       p_ret_info     OUT VARCHAR2
    )
    IS
-      l_file_type RSD_OUTFILES.FILE_TYPE%TYPE;
+      l_journal_name MI_0600.CZIP_NAME%TYPE;
    BEGIN
       p_task_id    := NULL;
       p_doc_key    := NULL;
@@ -867,27 +986,32 @@ IS
       p_ret_info   := NULL;
 
 
+      IF p_req_id IS NULL THEN
+         raise_Technical_Error(
+            p_code => 'MI_0606_INVALID_REQUEST_ID',
+            p_info => 'p_req_id must not be NULL'
+         );
+      END IF;
+
+
       BEGIN
          SELECT TRIM(r.CTAXREQ_ID),
                 TRIM(i.EXTERNAL_UUID),
-                f.CZIP_FILE_NAME,
+                TRIM(f.CZIP_FILE_NAME),
                 i.BZIP_DATA,
-                o.FILE_TYPE
+                i.CZIP_NAME
            INTO p_task_id,
                 p_doc_key,
                 p_file_name,
                 p_file_body,
-                l_file_type
+                l_journal_name
            FROM MI_REQ r
            JOIN MI_0600 i
              ON i.REQ_ID = r.REQ_ID
            JOIN MI_0600_F f
              ON f.ITM_ID = i.ITM_ID
-           JOIN RSD_OUTFILES o
-             ON i.CZIP_NAME =
-                   'MI_0606_' || TO_CHAR(o.ID)
           WHERE r.REQ_ID = p_req_id
-            AND r.INF_ID = 606;
+            AND r.INF_ID = cInfId;
 
       EXCEPTION
          WHEN NO_DATA_FOUND THEN
@@ -898,48 +1022,79 @@ IS
                || p_req_id;
 
             RETURN;
+
+         WHEN TOO_MANY_ROWS THEN
+            raise_Technical_Error(
+               p_code => 'MI_0606_MULTIPLE_FILES',
+               p_info =>
+                     'SEND_DOCUMENT journal contains multiple files: req_id='
+                  || p_req_id
+            );
       END;
 
 
-      p_doc_type :=
-         map_Doc_Type(l_file_type);
-
-      p_error_code :=
-         map_Error_Code(l_file_type);
-
-
-      IF p_doc_type IS NULL
-         AND p_error_code IS NULL
+      IF l_journal_name IS NULL
+         OR SUBSTR(l_journal_name, 1, LENGTH('MI_0606_')) <> 'MI_0606_'
       THEN
-         p_ret_code :=
-            RET_UNSUPPORTED_FILE_TYPE;
-
-         p_ret_info :=
-               'Unsupported RSD_OUTFILES.FILE_TYPE='
-            || NVL(TRIM(l_file_type), '<NULL>');
-
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_INVALID_JOURNAL_LINK',
+            p_info =>
+                  'Invalid SEND_DOCUMENT journal link: req_id='
+               || p_req_id
+         );
       END IF;
 
 
       IF p_task_id IS NULL
+         OR NOT MI_Utils.is_Uuid(p_task_id)
          OR p_doc_key IS NULL
+         OR NOT MI_Utils.is_Uuid(p_doc_key)
          OR p_file_name IS NULL
          OR p_file_body IS NULL
          OR DBMS_LOB.getlength(p_file_body) = 0
       THEN
-         p_ret_code := RET_FAIL;
-
-         p_ret_info :=
-            'SEND_DOCUMENT journal is incomplete';
-
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_INCOMPLETE_JOURNAL',
+            p_info =>
+                  'SEND_DOCUMENT journal is incomplete: req_id='
+               || p_req_id
+         );
       END IF;
+
+
+      /*
+         Capture currently accepts only PB2. Therefore the resolved protocol
+         value is immutable and does not require rereading mutable
+         RSD_OUTFILES. Before another FILE_TYPE is accepted, the model must
+         get a dedicated snapshot field for docType/errorCode.
+      */
+      p_doc_type   := cDocTypePb2;
+      p_error_code := NULL;
 
 
       p_ret_code := RET_OK;
       p_ret_info := 'SEND_DOCUMENT prepared';
 
+      g_log.debug(
+         p_message_text => 'SEND_DOCUMENT prepared',
+         p_action_code  => 'prepare',
+         p_details_text => TO_CLOB('req_id=' || p_req_id)
+      );
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         g_log.error(
+            p_message_text => 'prepare_Send_Document failed',
+            p_action_code  => 'prepare',
+            p_details_text =>
+               TO_CLOB(
+                     SQLERRM
+                  || CHR(10)
+                  || DBMS_UTILITY.format_error_backtrace
+               )
+         );
+
+         RAISE;
    END prepare_Send_Document;
 
 
@@ -958,17 +1113,20 @@ IS
       p_req_id         OUT MI_REQ.REQ_ID%TYPE,
       p_itm_id         OUT MI_0600.ITM_ID%TYPE,
       p_status_cd      OUT MI_REQ.STATUS_CD%TYPE,
-      p_current_msg    OUT MI_0600.MESSAGE_UUID%TYPE
+      p_current_msg    OUT MI_0600.MESSAGE_UUID%TYPE,
+      p_correlation_id OUT MI_REQ.CORRELATION_ID%TYPE
    )
    IS
       l_item_uuid MI_0600.EXTERNAL_UUID%TYPE;
    BEGIN
       SELECT REQ_ID,
-             STATUS_CD
+             STATUS_CD,
+             CORRELATION_ID
         INTO p_req_id,
-             p_status_cd
+             p_status_cd,
+             p_correlation_id
         FROM MI_REQ
-       WHERE INF_ID = 606
+       WHERE INF_ID = cInfId
          AND EXTERNAL_UUID = TRIM(p_request_uuid)
          FOR UPDATE;
 
@@ -987,12 +1145,13 @@ IS
       IF p_doc_key IS NOT NULL
          AND TRIM(l_item_uuid) <> TRIM(p_doc_key)
       THEN
-         RAISE_APPLICATION_ERROR(
-            -20974,
-               'SEND_DOCUMENT docKey mismatch: expected='
-            || TRIM(l_item_uuid)
-            || ', actual='
-            || TRIM(p_doc_key)
+         raise_Technical_Error(
+            p_code => 'MI_0606_DOC_KEY_MISMATCH',
+            p_info =>
+                  'SEND_DOCUMENT docKey mismatch: expected='
+               || TRIM(l_item_uuid)
+               || ', actual='
+               || TRIM(p_doc_key)
          );
       END IF;
    END lock_By_Request;
@@ -1005,7 +1164,8 @@ IS
       p_req_id         OUT MI_REQ.REQ_ID%TYPE,
       p_itm_id         OUT MI_0600.ITM_ID%TYPE,
       p_status_cd      OUT MI_REQ.STATUS_CD%TYPE,
-      p_current_msg    OUT MI_0600.MESSAGE_UUID%TYPE
+      p_current_msg    OUT MI_0600.MESSAGE_UUID%TYPE,
+      p_correlation_id OUT MI_REQ.CORRELATION_ID%TYPE
    )
    IS
    BEGIN
@@ -1021,11 +1181,13 @@ IS
        WHERE EXTERNAL_UUID = TRIM(p_doc_key);
 
 
-      SELECT STATUS_CD
-        INTO p_status_cd
+      SELECT STATUS_CD,
+             CORRELATION_ID
+        INTO p_status_cd,
+             p_correlation_id
         FROM MI_REQ
        WHERE REQ_ID = p_req_id
-         AND INF_ID = 606
+         AND INF_ID = cInfId
          FOR UPDATE;
 
 
@@ -1062,6 +1224,14 @@ IS
       -- Уже применённый terminal result.
       ------------------------------------------------------------------------
       IF p_current_msg IS NOT NULL THEN
+         IF p_status_cd <> MI_Request_Api.STATUS_DONE THEN
+            raise_Technical_Error(
+               p_code => 'MI_0606_INCONSISTENT_RESULT',
+               p_info =>
+                  'Item has terminal MESSAGE_UUID but request is not DONE'
+            );
+         END IF;
+
          IF TRIM(p_current_msg) = TRIM(p_message_uuid) THEN
             p_ret_code :=
                RET_ALREADY_APPLIED;
@@ -1073,7 +1243,7 @@ IS
          END IF;
 
 
-         p_ret_code := RET_FAIL;
+         p_ret_code := RET_OTHER_APPLIED;
 
          p_ret_info :=
                'Item result already applied by another message: '
@@ -1084,6 +1254,14 @@ IS
 
 
       IF p_status_cd <> MI_Request_Api.STATUS_SENT THEN
+         IF p_status_cd = MI_Request_Api.STATUS_DONE THEN
+            raise_Technical_Error(
+               p_code => 'MI_0606_INCONSISTENT_RESULT',
+               p_info =>
+                  'Request is DONE but item has no terminal MESSAGE_UUID'
+            );
+         END IF;
+
          p_ret_code := RET_BAD_STATE;
 
          p_ret_info :=
@@ -1105,10 +1283,11 @@ IS
 
 
       IF SQL%ROWCOUNT <> 1 THEN
-         RAISE_APPLICATION_ERROR(
-            -20975,
-               'MI_0600 terminal result update failed: itm_id='
-            || p_itm_id
+         raise_Technical_Error(
+            p_code => 'MI_0606_ITEM_RESULT_NOT_UPDATED',
+            p_info =>
+                  'MI_0600 terminal result update failed: itm_id='
+               || p_itm_id
          );
       END IF;
 
@@ -1121,7 +1300,14 @@ IS
 
 
       IF MI_ResultCtx.is_Failed(l_transition) THEN
-         MI_ResultCtx.raise_Error(l_transition);
+         MI_ResultCtx.raise_Error(
+            MI_ResultCtx.wrap_Exception(
+               p_cause => l_transition,
+               p_code  => 'MI_0606_REQUEST_COMPLETE_FAILED',
+               p_info  =>
+                  'Не удалось завершить request после terminal response'
+            )
+         );
       END IF;
 
 
@@ -1146,14 +1332,29 @@ IS
       p_ret_info       OUT VARCHAR2
    )
    IS
-      l_status        VARCHAR2(30);
+      l_status          VARCHAR2(30);
 
-      l_status_cd     MI_REQ.STATUS_CD%TYPE;
-      l_current_msg   MI_0600.MESSAGE_UUID%TYPE;
+      l_status_cd       MI_REQ.STATUS_CD%TYPE;
+      l_current_msg     MI_0600.MESSAGE_UUID%TYPE;
+      l_correlation_id  MI_REQ.CORRELATION_ID%TYPE;
 
-      l_savepoint     DCL.T_Name;
+      l_savepoint       DCL.T_Name;
+      l_rollback_ok     BOOLEAN;
 
-      l_log           MI_Logger_T := g_log;
+      l_log             MI_Logger_T := g_log;
+
+
+      PROCEDURE rollback_For_Result
+      IS
+      BEGIN
+         rollback_Or_Raise(
+            p_name => l_savepoint,
+            p_code => 'MI_0606_SUBMITTED_ROLLBACK_FAILED',
+            p_info =>
+               'Не удалось завершить DOCUMENT_SUBMITTED без изменений; '
+               || 'требуется полный rollback транзакции'
+         );
+      END rollback_For_Result;
    BEGIN
       p_req_id   := NULL;
       p_itm_id   := NULL;
@@ -1164,30 +1365,38 @@ IS
       IF p_request_uuid IS NULL
          OR NOT MI_Utils.is_Uuid(TRIM(p_request_uuid))
       THEN
-         p_ret_info := 'Invalid request UUID';
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_INVALID_REQUEST_UUID',
+            p_info => 'DOCUMENT_SUBMITTED request UUID must be valid'
+         );
       END IF;
 
 
       IF p_message_uuid IS NULL
          OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
       THEN
-         p_ret_info := 'Invalid message UUID';
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_INVALID_MESSAGE_UUID',
+            p_info => 'DOCUMENT_SUBMITTED message UUID must be valid'
+         );
       END IF;
 
 
       IF p_doc_key IS NULL
          OR NOT MI_Utils.is_Uuid(TRIM(p_doc_key))
       THEN
-         p_ret_info := 'Invalid docKey';
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_INVALID_DOC_KEY',
+            p_info => 'DOCUMENT_SUBMITTED docKey must be valid'
+         );
       END IF;
 
 
       IF p_response_time IS NULL THEN
-         p_ret_info := 'response_time must not be NULL';
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_RESPONSE_TIME_REQUIRED',
+            p_info => 'DOCUMENT_SUBMITTED response_time must not be NULL'
+         );
       END IF;
 
 
@@ -1195,21 +1404,30 @@ IS
          UPPER(TRIM(p_status));
 
 
-      IF l_status NOT IN (
+      IF l_status IS NULL
+         OR l_status NOT IN (
             'SUCCESS',
             'ERROR',
             'VALIDATION_ERROR'
          )
       THEN
-         p_ret_info :=
-               'Unsupported DOCUMENT_SUBMITTED.status='
-            || NVL(l_status, '<NULL>');
-
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_UNSUPPORTED_SUBMITTED_STATUS',
+            p_info =>
+                  'Unsupported DOCUMENT_SUBMITTED.status='
+               || NVL(l_status, '<NULL>')
+         );
       END IF;
 
 
       DCL.SavePoint(l_savepoint);
+
+      IF l_savepoint IS NULL THEN
+         raise_Technical_Error(
+            p_code => 'MI_0606_SUBMITTED_SAVEPOINT_UNAVAILABLE',
+            p_info => 'DCL did not create the DOCUMENT_SUBMITTED savepoint'
+         );
+      END IF;
 
 
       BEGIN
@@ -1220,12 +1438,13 @@ IS
             p_req_id       => p_req_id,
             p_itm_id       => p_itm_id,
             p_status_cd    => l_status_cd,
-            p_current_msg  => l_current_msg
+            p_current_msg  => l_current_msg,
+            p_correlation_id => l_correlation_id
          );
 
       EXCEPTION
          WHEN NO_DATA_FOUND THEN
-            DCL.RollBack(l_savepoint);
+            rollback_For_Result;
 
             p_ret_code := RET_NO_DATA;
             p_ret_info := 'SEND_DOCUMENT request/item not found';
@@ -1235,9 +1454,10 @@ IS
 
 
       l_log.context(
-         p_inf_id => 606,
-         p_req_id => p_req_id,
-         p_itm_id => p_itm_id
+         p_inf_id         => cInfId,
+         p_req_id         => p_req_id,
+         p_itm_id         => p_itm_id,
+         p_correlation_id => l_correlation_id
       );
 
 
@@ -1246,6 +1466,8 @@ IS
       ------------------------------------------------------------------------
       IF l_status = 'SUCCESS' THEN
          IF l_status_cd = MI_Request_Api.STATUS_SENT THEN
+            rollback_For_Result;
+
             p_ret_code := RET_OK;
             p_ret_info := 'DOCUMENT_SUBMITTED SUCCESS accepted';
 
@@ -1259,14 +1481,15 @@ IS
 
 
          IF l_status_cd = MI_Request_Api.STATUS_DONE THEN
+            rollback_For_Result;
+
             p_ret_code := RET_ALREADY_APPLIED;
             p_ret_info := 'Request already completed';
 
             RETURN;
          END IF;
 
-
-         DCL.RollBack(l_savepoint);
+         rollback_For_Result;
 
          p_ret_code := RET_BAD_STATE;
 
@@ -1289,7 +1512,7 @@ IS
 
          p_message_uuid  => p_message_uuid,
 
-         p_ires_code     => RET_FAIL,
+         p_ires_code     => MI_Item_Result_Api.RESPONSE_FAIL,
          p_error_code    => l_status,
          p_info          =>
             TO_CLOB(
@@ -1302,11 +1525,34 @@ IS
       );
 
 
+      IF p_ret_code IS NULL OR p_ret_code <> RET_OK THEN
+         rollback_For_Result;
+      ELSE
+         l_log.info(
+            p_message_text => 'DOCUMENT_SUBMITTED terminal result applied',
+            p_action_code  => 'submitted_terminal',
+            p_details_text => TO_CLOB('status=' || l_status)
+         );
+      END IF;
+
+
    EXCEPTION
       WHEN OTHERS THEN
-         IF l_savepoint IS NOT NULL THEN
-            DCL.RollBack(l_savepoint);
-         END IF;
+         l_rollback_ok := rollback_Savepoint(l_savepoint);
+
+         l_log.error(
+            p_message_text => 'apply_Document_Submitted failed',
+            p_action_code  => 'submitted',
+            p_details_text =>
+               TO_CLOB(
+                     SQLERRM
+                  || CHR(10)
+                  || DBMS_UTILITY.format_error_backtrace
+                  || CHR(10)
+                  || 'own_rollback='
+                  || MI_Utils.to_Char(l_rollback_ok)
+               )
+         );
 
          RAISE;
    END apply_Document_Submitted;
@@ -1328,15 +1574,32 @@ IS
       p_ret_info       OUT VARCHAR2
    )
    IS
-      l_state         VARCHAR2(30);
+      l_state           VARCHAR2(30);
 
-      l_status_cd     MI_REQ.STATUS_CD%TYPE;
-      l_current_msg   MI_0600.MESSAGE_UUID%TYPE;
+      l_status_cd       MI_REQ.STATUS_CD%TYPE;
+      l_current_msg     MI_0600.MESSAGE_UUID%TYPE;
+      l_correlation_id  MI_REQ.CORRELATION_ID%TYPE;
 
-      l_ires_code     MI_0600.IRES_CODE%TYPE;
-      l_error_code    MI_0600.ERROR_CODE%TYPE;
+      l_ires_code       MI_0600.IRES_CODE%TYPE;
+      l_error_code      MI_0600.ERROR_CODE%TYPE;
 
-      l_savepoint     DCL.T_Name;
+      l_savepoint       DCL.T_Name;
+      l_rollback_ok     BOOLEAN;
+
+      l_log             MI_Logger_T := g_log;
+
+
+      PROCEDURE rollback_For_Result
+      IS
+      BEGIN
+         rollback_Or_Raise(
+            p_name => l_savepoint,
+            p_code => 'MI_0606_STATUS_ROLLBACK_FAILED',
+            p_info =>
+               'Не удалось завершить DOCUMENT_STATUS без изменений; '
+               || 'требуется полный rollback транзакции'
+         );
+      END rollback_For_Result;
    BEGIN
       p_req_id   := NULL;
       p_itm_id   := NULL;
@@ -1347,22 +1610,28 @@ IS
       IF p_message_uuid IS NULL
          OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
       THEN
-         p_ret_info := 'Invalid message UUID';
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_INVALID_MESSAGE_UUID',
+            p_info => 'DOCUMENT_STATUS message UUID must be valid'
+         );
       END IF;
 
 
       IF p_doc_key IS NULL
          OR NOT MI_Utils.is_Uuid(TRIM(p_doc_key))
       THEN
-         p_ret_info := 'Invalid docKey';
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_INVALID_DOC_KEY',
+            p_info => 'DOCUMENT_STATUS docKey must be valid'
+         );
       END IF;
 
 
       IF p_response_time IS NULL THEN
-         p_ret_info := 'response_time must not be NULL';
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_RESPONSE_TIME_REQUIRED',
+            p_info => 'DOCUMENT_STATUS response_time must not be NULL'
+         );
       END IF;
 
 
@@ -1370,22 +1639,31 @@ IS
          UPPER(TRIM(p_state));
 
 
-      IF l_state NOT IN (
+      IF l_state IS NULL
+         OR l_state NOT IN (
             'PROCESSED',
             'ERROR_STATE',
             'ERROR_INTERNAL',
             'ERROR_PROCESSING'
          )
       THEN
-         p_ret_info :=
-               'Unsupported DOCUMENT_STATUS.state='
-            || NVL(l_state, '<NULL>');
-
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_UNSUPPORTED_DOCUMENT_STATE',
+            p_info =>
+                  'Unsupported DOCUMENT_STATUS.state='
+               || NVL(l_state, '<NULL>')
+         );
       END IF;
 
 
       DCL.SavePoint(l_savepoint);
+
+      IF l_savepoint IS NULL THEN
+         raise_Technical_Error(
+            p_code => 'MI_0606_STATUS_SAVEPOINT_UNAVAILABLE',
+            p_info => 'DCL did not create the DOCUMENT_STATUS savepoint'
+         );
+      END IF;
 
 
       BEGIN
@@ -1395,12 +1673,13 @@ IS
             p_req_id        => p_req_id,
             p_itm_id        => p_itm_id,
             p_status_cd     => l_status_cd,
-            p_current_msg   => l_current_msg
+            p_current_msg   => l_current_msg,
+            p_correlation_id => l_correlation_id
          );
 
       EXCEPTION
          WHEN NO_DATA_FOUND THEN
-            DCL.RollBack(l_savepoint);
+            rollback_For_Result;
 
             p_ret_code := RET_NO_DATA;
             p_ret_info := 'SEND_DOCUMENT item not found';
@@ -1409,11 +1688,19 @@ IS
       END;
 
 
+      l_log.context(
+         p_inf_id         => cInfId,
+         p_req_id         => p_req_id,
+         p_itm_id         => p_itm_id,
+         p_correlation_id => l_correlation_id
+      );
+
+
       IF l_state = 'PROCESSED' THEN
-         l_ires_code  := RET_OK;
+         l_ires_code  := MI_Item_Result_Api.RESPONSE_OK;
          l_error_code := NULL;
       ELSE
-         l_ires_code  := RET_FAIL;
+         l_ires_code  := MI_Item_Result_Api.RESPONSE_FAIL;
          l_error_code := l_state;
       END IF;
 
@@ -1441,11 +1728,34 @@ IS
       );
 
 
+      IF p_ret_code IS NULL OR p_ret_code <> RET_OK THEN
+         rollback_For_Result;
+      ELSE
+         l_log.info(
+            p_message_text => 'DOCUMENT_STATUS applied',
+            p_action_code  => 'document_status',
+            p_details_text => TO_CLOB('state=' || l_state)
+         );
+      END IF;
+
+
    EXCEPTION
       WHEN OTHERS THEN
-         IF l_savepoint IS NOT NULL THEN
-            DCL.RollBack(l_savepoint);
-         END IF;
+         l_rollback_ok := rollback_Savepoint(l_savepoint);
+
+         l_log.error(
+            p_message_text => 'apply_Document_Status failed',
+            p_action_code  => 'document_status',
+            p_details_text =>
+               TO_CLOB(
+                     SQLERRM
+                  || CHR(10)
+                  || DBMS_UTILITY.format_error_backtrace
+                  || CHR(10)
+                  || 'own_rollback='
+                  || MI_Utils.to_Char(l_rollback_ok)
+               )
+         );
 
          RAISE;
    END apply_Document_Status;
@@ -1467,12 +1777,29 @@ IS
       p_ret_info       OUT VARCHAR2
    )
    IS
-      l_status_cd     MI_REQ.STATUS_CD%TYPE;
-      l_current_msg   MI_0600.MESSAGE_UUID%TYPE;
+      l_status_cd       MI_REQ.STATUS_CD%TYPE;
+      l_current_msg     MI_0600.MESSAGE_UUID%TYPE;
+      l_correlation_id  MI_REQ.CORRELATION_ID%TYPE;
 
-      l_fault_code    VARCHAR2(100);
+      l_fault_code      VARCHAR2(100);
 
-      l_savepoint     DCL.T_Name;
+      l_savepoint       DCL.T_Name;
+      l_rollback_ok     BOOLEAN;
+
+      l_log             MI_Logger_T := g_log;
+
+
+      PROCEDURE rollback_For_Result
+      IS
+      BEGIN
+         rollback_Or_Raise(
+            p_name => l_savepoint,
+            p_code => 'MI_0606_FAULT_ROLLBACK_FAILED',
+            p_info =>
+               'Не удалось завершить FAULT без изменений; '
+               || 'требуется полный rollback транзакции'
+         );
+      END rollback_For_Result;
    BEGIN
       p_req_id   := NULL;
       p_itm_id   := NULL;
@@ -1483,22 +1810,28 @@ IS
       IF p_request_uuid IS NULL
          OR NOT MI_Utils.is_Uuid(TRIM(p_request_uuid))
       THEN
-         p_ret_info := 'Invalid request UUID';
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_INVALID_REQUEST_UUID',
+            p_info => 'FAULT request UUID must be valid'
+         );
       END IF;
 
 
       IF p_message_uuid IS NULL
          OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
       THEN
-         p_ret_info := 'Invalid message UUID';
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_INVALID_MESSAGE_UUID',
+            p_info => 'FAULT message UUID must be valid'
+         );
       END IF;
 
 
       IF p_response_time IS NULL THEN
-         p_ret_info := 'response_time must not be NULL';
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_RESPONSE_TIME_REQUIRED',
+            p_info => 'FAULT response_time must not be NULL'
+         );
       END IF;
 
 
@@ -1507,12 +1840,21 @@ IS
 
 
       IF l_fault_code IS NULL THEN
-         p_ret_info := 'FAULT.faultCode must not be empty';
-         RETURN;
+         raise_Technical_Error(
+            p_code => 'MI_0606_FAULT_CODE_REQUIRED',
+            p_info => 'FAULT.faultCode must not be empty'
+         );
       END IF;
 
 
       DCL.SavePoint(l_savepoint);
+
+      IF l_savepoint IS NULL THEN
+         raise_Technical_Error(
+            p_code => 'MI_0606_FAULT_SAVEPOINT_UNAVAILABLE',
+            p_info => 'DCL did not create the FAULT savepoint'
+         );
+      END IF;
 
 
       BEGIN
@@ -1523,18 +1865,27 @@ IS
             p_req_id       => p_req_id,
             p_itm_id       => p_itm_id,
             p_status_cd    => l_status_cd,
-            p_current_msg  => l_current_msg
+            p_current_msg  => l_current_msg,
+            p_correlation_id => l_correlation_id
          );
 
       EXCEPTION
          WHEN NO_DATA_FOUND THEN
-            DCL.RollBack(l_savepoint);
+            rollback_For_Result;
 
             p_ret_code := RET_NO_DATA;
             p_ret_info := 'SEND_DOCUMENT request not found';
 
             RETURN;
       END;
+
+
+      l_log.context(
+         p_inf_id         => cInfId,
+         p_req_id         => p_req_id,
+         p_itm_id         => p_itm_id,
+         p_correlation_id => l_correlation_id
+      );
 
 
       apply_Terminal_Result(
@@ -1545,7 +1896,7 @@ IS
 
          p_message_uuid  => p_message_uuid,
 
-         p_ires_code     => RET_FAIL,
+         p_ires_code     => MI_Item_Result_Api.RESPONSE_FAIL,
          p_error_code    => l_fault_code,
          p_info          =>
             CASE
@@ -1560,11 +1911,34 @@ IS
       );
 
 
+      IF p_ret_code IS NULL OR p_ret_code <> RET_OK THEN
+         rollback_For_Result;
+      ELSE
+         l_log.info(
+            p_message_text => 'FAULT applied',
+            p_action_code  => 'fault',
+            p_details_text => TO_CLOB('fault_code=' || l_fault_code)
+         );
+      END IF;
+
+
    EXCEPTION
       WHEN OTHERS THEN
-         IF l_savepoint IS NOT NULL THEN
-            DCL.RollBack(l_savepoint);
-         END IF;
+         l_rollback_ok := rollback_Savepoint(l_savepoint);
+
+         l_log.error(
+            p_message_text => 'apply_Fault failed',
+            p_action_code  => 'fault',
+            p_details_text =>
+               TO_CLOB(
+                     SQLERRM
+                  || CHR(10)
+                  || DBMS_UTILITY.format_error_backtrace
+                  || CHR(10)
+                  || 'own_rollback='
+                  || MI_Utils.to_Char(l_rollback_ok)
+               )
+         );
 
          RAISE;
    END apply_Fault;

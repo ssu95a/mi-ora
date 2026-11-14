@@ -72,6 +72,10 @@ PROMPT ------------------------------------------------------------
 SHOW ERRORS PACKAGE MI_0600_Api
 SHOW ERRORS PACKAGE BODY MI_0600_Api
 
+@ddl/mi_0600/packages/MI_0606_Api.sql
+SHOW ERRORS PACKAGE MI_0606_Api
+SHOW ERRORS PACKAGE BODY MI_0606_Api
+
 @ddl/mi_0600/packages/MI_0607_Api.sql
 SHOW ERRORS PACKAGE MI_0607_Api
 SHOW ERRORS PACKAGE BODY MI_0607_Api
