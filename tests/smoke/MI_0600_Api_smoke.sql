@@ -7,11 +7,12 @@ PROMPT MI_0600_Api smoke test
 PROMPT ============================================================
 
 DECLARE
-   l_result          MI_ResultCtx.exec_Result_t;
    l_transition      MI_ResultCtx.exec_Result_t;
 
    l_req_id          MI_REQ.REQ_ID%TYPE;
    l_itm_id          MI_0600.ITM_ID%TYPE;
+   l_duplicate_req   MI_REQ.REQ_ID%TYPE;
+   l_duplicate_itm   MI_0600.ITM_ID%TYPE;
    l_request_uuid    MI_REQ.EXTERNAL_UUID%TYPE;
    l_item_uuid       MI_0600.EXTERNAL_UUID%TYPE;
    l_message_uuid    MI_REQ.MESSAGE_UUID%TYPE;
@@ -23,8 +24,11 @@ DECLARE
    l_error_code      MI_0600.ERROR_CODE%TYPE;
    l_applied_message MI_0600.MESSAGE_UUID%TYPE;
    l_dsend_stamp     MI_0600.DSEND_STAMP%TYPE;
+   l_zip_blob        BLOB;
 
    l_count           PLS_INTEGER;
+   l_ret_code        NUMBER;
+   l_ret_info        VARCHAR2(4000);
 
 
    ---------------------------------------------------------------------------
@@ -77,40 +81,6 @@ DECLARE
    END assert_Success;
 
 
-   ---------------------------------------------------------------------------
-   FUNCTION number_Parameter (
-      p_result  IN MI_ResultCtx.exec_Result_t,
-      p_name    IN VARCHAR2
-   )
-      RETURN NUMBER
-   IS
-   BEGIN
-      RETURN TO_NUMBER(p_result.parameters(p_name));
-
-   EXCEPTION
-      WHEN NO_DATA_FOUND THEN
-         fail('result does not contain parameter ' || p_name);
-         RETURN NULL;
-   END number_Parameter;
-
-
-   ---------------------------------------------------------------------------
-   FUNCTION text_Parameter (
-      p_result  IN MI_ResultCtx.exec_Result_t,
-      p_name    IN VARCHAR2
-   )
-      RETURN VARCHAR2
-   IS
-   BEGIN
-      RETURN p_result.parameters(p_name);
-
-   EXCEPTION
-      WHEN NO_DATA_FOUND THEN
-         fail('result does not contain parameter ' || p_name);
-         RETURN NULL;
-   END text_Parameter;
-
-
 BEGIN
    SAVEPOINT before_mi_0600_smoke;
 
@@ -130,37 +100,50 @@ BEGIN
       || REPLACE(MI_Utils.uuid_V7, '-', '')
       || '.zip';
 
+   DBMS_LOB.createtemporary(l_zip_blob, TRUE);
+   DBMS_LOB.writeappend(
+      l_zip_blob,
+      22,
+      HEXTORAW('504B0506000000000000000000000000000000000000')
+   );
+
 
    ---------------------------------------------------------------------------
    DBMS_OUTPUT.put_line('1. create request, item and unique file list');
 
-   l_result :=
-      MI_0600_Api.create_Request(
-         p_inf_id            => 601,
-         p_czip_name         => l_zip_name,
-         p_bzip_data         => NULL,
-         p_izip_size         => 10,
-         p_izip_files_count  => 2,
-         p_file_names        =>
-            SYS.ODCIVARCHAR2LIST(
-               'first.xml',
-               'second.xml',
-               'first.xml'
-            ),
-         p_icreate_type      => 1
-      );
-
-   assert_Success(l_result, 'create_Request failed');
-
-   assert_True(
-      l_result.result_code = 'MI_0600_REQUEST_CREATED',
-      'unexpected create result_code=' || l_result.result_code
+   MI_0600_Api.create_Request(
+      p_inf_id            => 601,
+      p_czip_name         => l_zip_name,
+      p_bzip_data         => l_zip_blob,
+      p_izip_size         => DBMS_LOB.getlength(l_zip_blob),
+      p_izip_files_count  => 2,
+      p_file_names_json   => TO_CLOB(
+         '["first.xml","second.xml","first.xml"]'
+      ),
+      p_original_req_uuid => NULL,
+      p_message_uuid      => NULL,
+      p_ctaxreq_id        => NULL,
+      p_icreate_type      => 1,
+      p_req_id            => l_req_id,
+      p_itm_id            => l_itm_id,
+      p_ret_code          => l_ret_code,
+      p_ret_info          => l_ret_info
    );
 
-   l_req_id       := number_Parameter(l_result, 'req_id');
-   l_itm_id       := number_Parameter(l_result, 'itm_id');
-   l_request_uuid := text_Parameter(l_result, 'request_uuid');
-   l_item_uuid    := text_Parameter(l_result, 'item_uuid');
+   assert_True(
+      l_ret_code = MI_0600_Api.RET_OK,
+      'create_Request failed: ' || l_ret_info
+   );
+
+   SELECT r.EXTERNAL_UUID,
+          h.EXTERNAL_UUID
+     INTO l_request_uuid,
+          l_item_uuid
+     FROM MI_REQ r
+     JOIN MI_0600 h
+       ON h.REQ_ID = r.REQ_ID
+    WHERE r.REQ_ID = l_req_id
+      AND h.ITM_ID = l_itm_id;
 
    SELECT COUNT(*)
      INTO l_count
@@ -175,27 +158,31 @@ BEGIN
    ---------------------------------------------------------------------------
    DBMS_OUTPUT.put_line('2. reuse duplicate initiator archive');
 
-   l_result :=
-      MI_0600_Api.create_Request(
-         p_inf_id            => 601,
-         p_czip_name         => l_zip_name,
-         p_bzip_data         => NULL,
-         p_izip_size         => 20,
-         p_izip_files_count  => 1,
-         p_file_names        => SYS.ODCIVARCHAR2LIST('renamed.xml'),
-         p_icreate_type      => 1
-      );
-
-   assert_Success(l_result, 'duplicate create_Request failed');
-
-   assert_True(
-      l_result.result_code = 'MI_0600_REQUEST_REUSED',
-      'duplicate archive was not reused'
+   MI_0600_Api.create_Request(
+      p_inf_id            => 601,
+      p_czip_name         => l_zip_name,
+      p_bzip_data         => l_zip_blob,
+      p_izip_size         => DBMS_LOB.getlength(l_zip_blob),
+      p_izip_files_count  => 1,
+      p_file_names_json   => TO_CLOB('["renamed.xml"]'),
+      p_original_req_uuid => NULL,
+      p_message_uuid      => NULL,
+      p_ctaxreq_id        => NULL,
+      p_icreate_type      => 1,
+      p_req_id            => l_duplicate_req,
+      p_itm_id            => l_duplicate_itm,
+      p_ret_code          => l_ret_code,
+      p_ret_info          => l_ret_info
    );
 
    assert_True(
-      number_Parameter(l_result, 'req_id') = l_req_id
-      AND number_Parameter(l_result, 'itm_id') = l_itm_id,
+      l_ret_code = MI_0600_Api.RET_OK,
+      'duplicate create_Request failed: ' || l_ret_info
+   );
+
+   assert_True(
+      l_duplicate_req = l_req_id
+      AND l_duplicate_itm = l_itm_id,
       'duplicate archive returned different IDs'
    );
 
@@ -240,22 +227,27 @@ BEGIN
 
    l_message_uuid := MI_Utils.uuid_V7;
 
-   l_result :=
-      MI_0600_Api.apply_Item_Result(
-         p_request_uuid      => l_request_uuid,
-         p_message_uuid      => l_message_uuid,
-         p_item_uuid         => l_item_uuid,
-         p_response_kind     => MI_Item_Result_Api.RESPONSE_OK,
-         p_response_code     => NULL,
-         p_response_info     => NULL,
-         p_response_details  => NULL,
-         p_response_time     => SYSTIMESTAMP,
-         p_payload_text      => TO_CLOB(
-            '{"state":7,"message":"accepted"}'
-         )
-      );
+   MI_0600_Api.apply_Item_Result(
+      p_request_uuid      => l_request_uuid,
+      p_message_uuid      => l_message_uuid,
+      p_item_uuid         => l_item_uuid,
+      p_response_kind     => MI_Item_Result_Api.RESPONSE_OK,
+      p_response_code     => NULL,
+      p_response_info     => NULL,
+      p_response_details  => NULL,
+      p_response_time     => SYSTIMESTAMP,
+      p_payload_text      => TO_CLOB(
+         '{"state":7,"message":"accepted"}'
+      ),
+      p_payload_type      => 'json',
+      p_ret_code          => l_ret_code,
+      p_ret_info          => l_ret_info
+   );
 
-   assert_Success(l_result, 'apply_Item_Result failed');
+   assert_True(
+      l_ret_code = MI_Item_Result_Api.RET_APPLIED,
+      'apply_Item_Result failed: ' || l_ret_info
+   );
 
    SELECT IRES_CODE,
           DBMS_LOB.SUBSTR(CRES_INFO, 2000, 1),
@@ -291,26 +283,26 @@ BEGIN
    ---------------------------------------------------------------------------
    DBMS_OUTPUT.put_line('5. replay is idempotent');
 
-   l_result :=
-      MI_0600_Api.apply_Item_Result(
-         p_request_uuid      => l_request_uuid,
-         p_message_uuid      => l_message_uuid,
-         p_item_uuid         => l_item_uuid,
-         p_response_kind     => MI_Item_Result_Api.RESPONSE_OK,
-         p_response_code     => NULL,
-         p_response_info     => NULL,
-         p_response_details  => NULL,
-         p_response_time     => SYSTIMESTAMP,
-         p_payload_text      => TO_CLOB(
-            '{"state":7,"message":"accepted"}'
-         )
-      );
-
-   assert_Success(l_result, 'idempotent replay failed');
+   MI_0600_Api.apply_Item_Result(
+      p_request_uuid      => l_request_uuid,
+      p_message_uuid      => l_message_uuid,
+      p_item_uuid         => l_item_uuid,
+      p_response_kind     => MI_Item_Result_Api.RESPONSE_OK,
+      p_response_code     => NULL,
+      p_response_info     => NULL,
+      p_response_details  => NULL,
+      p_response_time     => SYSTIMESTAMP,
+      p_payload_text      => TO_CLOB(
+         '{"state":7,"message":"accepted"}'
+      ),
+      p_payload_type      => 'json',
+      p_ret_code          => l_ret_code,
+      p_ret_info          => l_ret_info
+   );
 
    assert_True(
-      l_result.result_code = 'ITEM_RESULT_ALREADY_APPLIED',
-      'replay was not recognized as already applied'
+      l_ret_code = MI_Item_Result_Api.RET_ALREADY_APPLIED,
+      'replay was not recognized as already applied: ' || l_ret_info
    );
 
    DBMS_OUTPUT.put_line('   OK');
@@ -318,11 +310,18 @@ BEGIN
 
    ROLLBACK TO before_mi_0600_smoke;
 
+   DBMS_LOB.freetemporary(l_zip_blob);
+
    DBMS_OUTPUT.put_line('MI_0600_Api smoke test passed');
 
 EXCEPTION
    WHEN OTHERS THEN
       ROLLBACK TO before_mi_0600_smoke;
+
+      IF DBMS_LOB.istemporary(l_zip_blob) = 1 THEN
+         DBMS_LOB.freetemporary(l_zip_blob);
+      END IF;
+
       RAISE;
 END;
 /

@@ -2,13 +2,13 @@ CREATE OR REPLACE PACKAGE MI_0600_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.0.0} {14.11.2026} Sulimoff$';
+      '$Id: {1.1.0} {14.11.2026} Sulimoff$';
 
 
-   RET_FAIL     CONSTANT PLS_INTEGER := -1;
-   RET_OK       CONSTANT PLS_INTEGER :=  0;
-   RET_NO_DATA  CONSTANT PLS_INTEGER :=  1;
-   RET_EXISTS   CONSTANT PLS_INTEGER :=  4;
+   RET_FAIL     CONSTANT NUMBER := -1;
+   RET_OK       CONSTANT NUMBER :=  0;
+   RET_NO_DATA  CONSTANT NUMBER :=  1;
+   RET_EXISTS   CONSTANT NUMBER :=  4;
 
 
    FUNCTION get_Version
@@ -26,26 +26,35 @@ IS
       Для ответчиков 602/604/612 дополнительно распознаётся повтор по
       ORIGINAL_REQ_UUID внутри того же INF_ID.
 
-      SYS.ODCIVARCHAR2LIST выбран как SQL-visible collection, которую можно
-      передать из JDBC одним server call.
+      JDBC boundary содержит только стандартные SQL-типы. Список файлов
+      передаётся JSON-массивом в CLOB, например:
+
+         ["one.xml", "dir/two.xml"]
+
+      PL/SQL record MI_ResultCtx и SQL collection используются только внутри
+      package body и не выходят в JDBC contract.
 
       Package не выполняет COMMIT. При ошибке откатывает только собственную
       работу через DCL.SavePoint/RollBack.
    */
-   FUNCTION create_Request (
+   PROCEDURE create_Request (
       p_inf_id                IN MI_REQ.INF_ID%TYPE,
       p_czip_name             IN MI_0600.CZIP_NAME%TYPE,
       p_bzip_data             IN MI_0600.BZIP_DATA%TYPE,
-      p_izip_size             IN MI_0600.IZIP_SIZE%TYPE        DEFAULT NULL,
-      p_izip_files_count      IN MI_0600.IZIP_FILES_COUNT%TYPE DEFAULT NULL,
-      p_file_names            IN SYS.ODCIVARCHAR2LIST          DEFAULT NULL,
+      p_izip_size             IN MI_0600.IZIP_SIZE%TYPE,
+      p_izip_files_count      IN MI_0600.IZIP_FILES_COUNT%TYPE,
+      p_file_names_json       IN CLOB,
 
-      p_original_req_uuid     IN MI_REQ.ORIGINAL_REQ_UUID%TYPE DEFAULT NULL,
-      p_message_uuid          IN MI_REQ.MESSAGE_UUID%TYPE      DEFAULT NULL,
-      p_ctaxreq_id            IN MI_REQ.CTAXREQ_ID%TYPE        DEFAULT NULL,
-      p_icreate_type          IN MI_0600.ICREATE_TYPE%TYPE     DEFAULT 0
-   )
-      RETURN MI_ResultCtx.exec_Result_t;
+      p_original_req_uuid     IN MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_message_uuid          IN MI_REQ.MESSAGE_UUID%TYPE,
+      p_ctaxreq_id            IN MI_REQ.CTAXREQ_ID%TYPE,
+      p_icreate_type          IN MI_0600.ICREATE_TYPE%TYPE,
+
+      p_req_id                OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id                OUT MI_0600.ITM_ID%TYPE,
+      p_ret_code              OUT NUMBER,
+      p_ret_info              OUT VARCHAR2
+   );
 
 
    /*
@@ -60,12 +69,12 @@ IS
    /*
       Business wrapper общего item-result contract.
    */
-   FUNCTION apply_Item_Result (
+   PROCEDURE apply_Item_Result (
       p_request_uuid      IN MI_REQ.EXTERNAL_UUID%TYPE,
       p_message_uuid      IN MI_REQ.MESSAGE_UUID%TYPE,
       p_item_uuid         IN MI_0600.EXTERNAL_UUID%TYPE,
 
-      p_response_kind     IN PLS_INTEGER,
+      p_response_kind     IN NUMBER,
 
       p_response_code     IN MI_REQ.RESULT_CODE%TYPE,
       p_response_info     IN MI_REQ.RESULT_INFO%TYPE,
@@ -73,9 +82,11 @@ IS
       p_response_time     IN TIMESTAMP WITH TIME ZONE,
 
       p_payload_text      IN CLOB,
-      p_payload_type      IN VARCHAR2 DEFAULT 'json'
-   )
-      RETURN MI_ResultCtx.exec_Result_t;
+      p_payload_type      IN VARCHAR2,
+
+      p_ret_code          OUT NUMBER,
+      p_ret_info          OUT VARCHAR2
+   );
 
 
    /*
@@ -246,6 +257,61 @@ IS
 
 
    ---------------------------------------------------------------------------
+   FUNCTION result_Number (
+      p_result  IN MI_ResultCtx.exec_Result_t,
+      p_name    IN VARCHAR2
+   )
+      RETURN NUMBER
+   IS
+   BEGIN
+      RETURN TO_NUMBER(p_result.parameters(p_name));
+
+   EXCEPTION
+      WHEN NO_DATA_FOUND OR VALUE_ERROR THEN
+         RETURN NULL;
+   END result_Number;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE export_Result (
+      p_result    IN  MI_ResultCtx.exec_Result_t,
+      p_ret_code  OUT NUMBER,
+      p_ret_info  OUT VARCHAR2
+   )
+   IS
+   BEGIN
+      p_ret_code := result_Number(p_result, 'ret_code');
+
+      IF p_ret_code IS NULL THEN
+         IF MI_ResultCtx.is_Success(p_result) THEN
+            p_ret_code := RET_OK;
+         ELSE
+            p_ret_code := RET_FAIL;
+         END IF;
+      END IF;
+
+      p_ret_info :=
+         SUBSTR(
+               NVL(p_result.result_code, '<NO_RESULT_CODE>')
+            || ': '
+            || NVL(p_result.result_info, '<NO_RESULT_INFO>')
+            || CASE
+                  WHEN p_result.cause_code IS NOT NULL
+                     OR p_result.cause_info IS NOT NULL
+                  THEN
+                        '; cause='
+                     || NVL(p_result.cause_code, '<NO_CAUSE_CODE>')
+                     || ': '
+                     || NVL(p_result.cause_info, '<NO_CAUSE_INFO>')
+                  ELSE NULL
+               END,
+            1,
+            4000
+         );
+   END export_Result;
+
+
+   ---------------------------------------------------------------------------
    PROCEDURE replace_File_Names (
       p_itm_id      IN MI_0600.ITM_ID%TYPE,
       p_file_names  IN SYS.ODCIVARCHAR2LIST
@@ -295,7 +361,7 @@ IS
 
 
    ---------------------------------------------------------------------------
-   FUNCTION create_Request (
+   FUNCTION create_Request_Impl (
       p_inf_id                IN MI_REQ.INF_ID%TYPE,
       p_czip_name             IN MI_0600.CZIP_NAME%TYPE,
       p_bzip_data             IN MI_0600.BZIP_DATA%TYPE,
@@ -583,6 +649,14 @@ IS
             );
       END IF;
 
+      IF p_bzip_data IS NULL THEN
+         RETURN
+            failure_Result(
+               p_code => 'MI_0600_ZIP_REQUIRED',
+               p_info => 'p_bzip_data must not be NULL'
+            );
+      END IF;
+
       IF p_original_req_uuid IS NOT NULL
          AND NOT MI_Utils.is_Uuid(p_original_req_uuid)
       THEN
@@ -824,6 +898,121 @@ IS
 
          l_result.parameters('ret_code') := TO_CHAR(RET_FAIL);
          RETURN l_result;
+   END create_Request_Impl;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE create_Request (
+      p_inf_id                IN MI_REQ.INF_ID%TYPE,
+      p_czip_name             IN MI_0600.CZIP_NAME%TYPE,
+      p_bzip_data             IN MI_0600.BZIP_DATA%TYPE,
+      p_izip_size             IN MI_0600.IZIP_SIZE%TYPE,
+      p_izip_files_count      IN MI_0600.IZIP_FILES_COUNT%TYPE,
+      p_file_names_json       IN CLOB,
+
+      p_original_req_uuid     IN MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_message_uuid          IN MI_REQ.MESSAGE_UUID%TYPE,
+      p_ctaxreq_id            IN MI_REQ.CTAXREQ_ID%TYPE,
+      p_icreate_type          IN MI_0600.ICREATE_TYPE%TYPE,
+
+      p_req_id                OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id                OUT MI_0600.ITM_ID%TYPE,
+      p_ret_code              OUT NUMBER,
+      p_ret_info              OUT VARCHAR2
+   )
+   IS
+      l_file_names  SYS.ODCIVARCHAR2LIST := SYS.ODCIVARCHAR2LIST();
+      l_json_valid  PLS_INTEGER;
+      l_result      MI_ResultCtx.exec_Result_t;
+   BEGIN
+      p_req_id   := NULL;
+      p_itm_id   := NULL;
+      p_ret_code := RET_FAIL;
+      p_ret_info := NULL;
+
+      IF p_file_names_json IS NOT NULL
+         AND DBMS_LOB.getlength(p_file_names_json) > 0
+      THEN
+         SELECT CASE
+                   WHEN p_file_names_json IS JSON STRICT THEN 1
+                   ELSE 0
+                END
+           INTO l_json_valid
+           FROM DUAL;
+
+         IF l_json_valid = 0 THEN
+            p_ret_info :=
+               'MI_0600_INVALID_FILE_NAMES_JSON: '
+               || 'p_file_names_json must contain valid JSON';
+            RETURN;
+         END IF;
+
+         SELECT file_name
+           BULK COLLECT INTO l_file_names
+           FROM JSON_TABLE(
+                   p_file_names_json,
+                   '$[*]'
+                   COLUMNS (
+                      item_order FOR ORDINALITY,
+                      file_name  VARCHAR2(300) PATH '$' ERROR ON ERROR
+                   )
+                )
+          ORDER BY item_order;
+
+         IF l_file_names.COUNT > 0 THEN
+            FOR i IN 1 .. l_file_names.COUNT LOOP
+               IF TRIM(l_file_names(i)) IS NULL THEN
+                  p_ret_info :=
+                     'MI_0600_INVALID_FILE_NAME: '
+                     || 'file name at JSON position '
+                     || i
+                     || ' is NULL or blank';
+                  RETURN;
+               END IF;
+            END LOOP;
+         END IF;
+      END IF;
+
+      l_result :=
+         create_Request_Impl(
+            p_inf_id            => p_inf_id,
+            p_czip_name         => p_czip_name,
+            p_bzip_data         => p_bzip_data,
+            p_izip_size         => p_izip_size,
+            p_izip_files_count  => p_izip_files_count,
+            p_file_names        => l_file_names,
+            p_original_req_uuid => p_original_req_uuid,
+            p_message_uuid      => p_message_uuid,
+            p_ctaxreq_id        => p_ctaxreq_id,
+            p_icreate_type      => p_icreate_type
+         );
+
+      p_req_id := result_Number(l_result, 'req_id');
+      p_itm_id := result_Number(l_result, 'itm_id');
+
+      export_Result(
+         p_result   => l_result,
+         p_ret_code => p_ret_code,
+         p_ret_info => p_ret_info
+      );
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         p_req_id   := NULL;
+         p_itm_id   := NULL;
+         p_ret_code := RET_FAIL;
+         p_ret_info :=
+            SUBSTR(
+               'MI_0600_JDBC_WRAPPER_FAILED: ' || SQLERRM,
+               1,
+               4000
+            );
+
+         g_log.error(
+            p_message_text => 'create_Request JDBC wrapper failed',
+            p_action_code  => 'jdbc_wrapper',
+            p_details_text => TO_CLOB(SQLERRM)
+         );
    END create_Request;
 
 
@@ -851,7 +1040,7 @@ IS
 
 
    ---------------------------------------------------------------------------
-   FUNCTION apply_Item_Result (
+   FUNCTION apply_Item_Result_Impl (
       p_request_uuid      IN MI_REQ.EXTERNAL_UUID%TYPE,
       p_message_uuid      IN MI_REQ.MESSAGE_UUID%TYPE,
       p_item_uuid         IN MI_0600.EXTERNAL_UUID%TYPE,
@@ -897,6 +1086,69 @@ IS
       );
 
       RETURN l_result;
+   END apply_Item_Result_Impl;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE apply_Item_Result (
+      p_request_uuid      IN MI_REQ.EXTERNAL_UUID%TYPE,
+      p_message_uuid      IN MI_REQ.MESSAGE_UUID%TYPE,
+      p_item_uuid         IN MI_0600.EXTERNAL_UUID%TYPE,
+
+      p_response_kind     IN NUMBER,
+
+      p_response_code     IN MI_REQ.RESULT_CODE%TYPE,
+      p_response_info     IN MI_REQ.RESULT_INFO%TYPE,
+      p_response_details  IN CLOB,
+      p_response_time     IN TIMESTAMP WITH TIME ZONE,
+
+      p_payload_text      IN CLOB,
+      p_payload_type      IN VARCHAR2,
+
+      p_ret_code          OUT NUMBER,
+      p_ret_info          OUT VARCHAR2
+   )
+   IS
+      l_result MI_ResultCtx.exec_Result_t;
+   BEGIN
+      p_ret_code := MI_Item_Result_Api.RET_FAIL;
+      p_ret_info := NULL;
+
+      l_result :=
+         apply_Item_Result_Impl(
+            p_request_uuid      => p_request_uuid,
+            p_message_uuid      => p_message_uuid,
+            p_item_uuid         => p_item_uuid,
+            p_response_kind     => p_response_kind,
+            p_response_code     => p_response_code,
+            p_response_info     => p_response_info,
+            p_response_details  => p_response_details,
+            p_response_time     => p_response_time,
+            p_payload_text      => p_payload_text,
+            p_payload_type      => p_payload_type
+         );
+
+      export_Result(
+         p_result   => l_result,
+         p_ret_code => p_ret_code,
+         p_ret_info => p_ret_info
+      );
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         p_ret_code := MI_Item_Result_Api.RET_FAIL;
+         p_ret_info :=
+            SUBSTR(
+               'MI_0600_JDBC_WRAPPER_FAILED: ' || SQLERRM,
+               1,
+               4000
+            );
+
+         g_log.error(
+            p_message_text => 'apply_Item_Result JDBC wrapper failed',
+            p_action_code  => 'jdbc_wrapper',
+            p_details_text => TO_CLOB(SQLERRM)
+         );
    END apply_Item_Result;
 
 
