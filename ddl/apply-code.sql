@@ -21,6 +21,10 @@ PROMPT ------------------------------------------------------------
 SHOW ERRORS PACKAGE MI_Utils
 SHOW ERRORS PACKAGE BODY MI_Utils
 
+@ddl/core/packages/MI_Prp.sql
+SHOW ERRORS PACKAGE MI_Prp
+SHOW ERRORS PACKAGE BODY MI_Prp
+
 @ddl/core/packages/MI_ResultCtx.sql
 SHOW ERRORS PACKAGE MI_ResultCtx
 SHOW ERRORS PACKAGE BODY MI_ResultCtx
