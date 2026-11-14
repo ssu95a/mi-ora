@@ -27,6 +27,8 @@ DECLARE
    l_zip_blob        BLOB;
 
    l_count           PLS_INTEGER;
+   l_req_count       PLS_INTEGER;
+   l_files_count     MI_0600.IZIP_FILES_COUNT%TYPE;
    l_ret_code        NUMBER;
    l_ret_info        VARCHAR2(4000);
 
@@ -159,35 +161,52 @@ BEGIN
 
 
    ---------------------------------------------------------------------------
-   DBMS_OUTPUT.put_line('2. reuse duplicate initiator archive');
+   DBMS_OUTPUT.put_line('2. reject duplicate final archive without changes');
 
-   MI_0600_Api.create_Request(
-      p_inf_id            => 601,
-      p_czip_name         => l_zip_name,
-      p_bzip_data         => l_zip_blob,
-      p_izip_size         => DBMS_LOB.getlength(l_zip_blob),
-      p_izip_files_count  => 1,
-      p_file_names        => SYS.ODCIVARCHAR2LIST('renamed.xml'),
-      p_original_req_uuid => NULL,
-      p_message_uuid      => NULL,
-      p_ctaxreq_id        => NULL,
-      p_icreate_type      => 1,
-      p_req_id            => l_duplicate_req,
-      p_itm_id            => l_duplicate_itm,
-      p_ret_code          => l_ret_code,
-      p_ret_info          => l_ret_info
-   );
+   SELECT COUNT(*)
+     INTO l_req_count
+     FROM MI_REQ;
 
-   assert_True(
-      l_ret_code = MI_0600_Api.RET_OK,
-      'duplicate create_Request failed: ' || l_ret_info
-   );
+   BEGIN
+      MI_0600_Api.create_Request(
+         p_inf_id            => 601,
+         p_czip_name         => l_zip_name,
+         p_bzip_data         => l_zip_blob,
+         p_izip_size         => DBMS_LOB.getlength(l_zip_blob),
+         p_izip_files_count  => 1,
+         p_file_names        => SYS.ODCIVARCHAR2LIST('renamed.xml'),
+         p_original_req_uuid => NULL,
+         p_message_uuid      => NULL,
+         p_ctaxreq_id        => NULL,
+         p_icreate_type      => 1,
+         p_req_id            => l_duplicate_req,
+         p_itm_id            => l_duplicate_itm,
+         p_ret_code          => l_ret_code,
+         p_ret_info          => l_ret_info
+      );
 
-   assert_True(
-      l_duplicate_req = l_req_id
-      AND l_duplicate_itm = l_itm_id,
-      'duplicate archive returned different IDs'
-   );
+      fail('duplicate archive was accepted');
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         IF SQLCODE <> MI_0600_Api.ERR_DUPLICATE_ARCHIVE THEN
+            RAISE;
+         END IF;
+   END;
+
+   SELECT IZIP_FILES_COUNT
+     INTO l_files_count
+     FROM MI_0600
+    WHERE CZIP_NAME = l_zip_name;
+
+   assert_True(l_files_count = 2, 'duplicate changed IZIP_FILES_COUNT');
+
+   SELECT COUNT(*)
+     INTO l_count
+     FROM MI_0600_F
+    WHERE ITM_ID = l_itm_id;
+
+   assert_True(l_count = 2, 'duplicate changed archive file count');
 
    SELECT COUNT(*)
      INTO l_count
@@ -195,7 +214,13 @@ BEGIN
     WHERE ITM_ID = l_itm_id
       AND CZIP_FILE_NAME = 'renamed.xml';
 
-   assert_True(l_count = 1, 'duplicate archive file list was not replaced');
+   assert_True(l_count = 0, 'duplicate changed archive file list');
+
+   SELECT COUNT(*)
+     INTO l_count
+     FROM MI_REQ;
+
+   assert_True(l_count = l_req_count, 'duplicate left an orphan MI_REQ');
 
    DBMS_OUTPUT.put_line('   OK');
 
@@ -217,7 +242,7 @@ BEGIN
    assert_True(l_dsend_stamp IS NOT NULL, 'DSEND_STAMP was not set');
 
    assert_True(
-      MI_0600_Api.get_Fns_File_Inqueue_Date('  ReNaMeD.xMl  ')
+      MI_0600_Api.get_Fns_File_Inqueue_Date('  FiRsT.xMl  ')
          = TRUNC(CAST(l_dsend_stamp AS DATE)),
       'file queue date lookup failed'
    );

@@ -3,13 +3,15 @@ IS
 
    /* MI-edo. Пакет бизнес-логики для 404 файлов */
 
-   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.2} {14.11.2026} Sulimoff$';
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.3} {14.11.2026} Sulimoff$';
 
 
    RET_FAIL     CONSTANT NUMBER := -1;
    RET_OK       CONSTANT NUMBER :=  0;
    RET_NO_DATA  CONSTANT NUMBER :=  1;
    RET_EXISTS   CONSTANT NUMBER :=  4;
+
+   ERR_DUPLICATE_ARCHIVE CONSTANT PLS_INTEGER := -20022;
 
    /* Версия*/
    FUNCTION get_Version
@@ -19,9 +21,9 @@ IS
    /*
       Атомарно создаёт MI_REQ, один MI_0600 item и список имён файлов.
 
-      Повторный capture возвращает существующие REQ_ID и
-      ITM_ID. Пока request находится в NEW/ERROR, архив и список файлов
-      обновляются; после начала обработки существующий item не изменяется.
+      CZIP_NAME идентифицирует финальный архив. Повторный архив отклоняется
+      исключением ORA-20022 / MI_0600_DUPLICATE_ARCHIVE. Существующие request,
+      item, BLOB и список файлов не изменяются.
 
       Для ответчиков 602/604/612 дополнительно распознаётся повтор по
       ORIGINAL_REQ_UUID внутри того же INF_ID.
@@ -111,6 +113,9 @@ IS
    -- глобальный логгер
    g_log CONSTANT MI_Logger_T := MI_Logger_T( p_logger_name  => cLogger, p_package_name => $$PLSQL_UNIT );
 
+   e_Duplicate_Archive EXCEPTION;
+   PRAGMA EXCEPTION_INIT(e_Duplicate_Archive, -20022);
+
 
    /* */
    FUNCTION get_Version
@@ -129,17 +134,6 @@ IS
    BEGIN
       RETURN p_inf_id IN (601, 602, 603, 604, 611, 612);
    END is_Supported_Inf;
-
-
-   /* Признак является ли ВС инициатором */
-   FUNCTION is_Initiator_Inf (
-      p_inf_id IN MI_REQ.INF_ID%TYPE
-   )
-      RETURN BOOLEAN
-   IS
-   BEGIN
-      RETURN p_inf_id IN (601, 603, 611);
-   END is_Initiator_Inf;
 
 
    /* Признак является ли ВС ответчиком */
@@ -291,8 +285,8 @@ IS
    END export_Result;
 
 
-   /* Заменяет файлы вапросе */
-   PROCEDURE replace_File_Names (
+   /* Сохраняет имена файлов нового запроса */
+   PROCEDURE insert_File_Names (
       p_itm_id      IN MI_0600.ITM_ID%TYPE,
       p_file_names  IN SYS.ODCIVARCHAR2LIST
    )
@@ -301,9 +295,6 @@ IS
       l_file_name  MI_0600_F.CZIP_FILE_NAME%TYPE;
    BEGIN
    
-      DELETE FROM MI_0600_F
-       WHERE ITM_ID = p_itm_id;
-
       IF p_file_names.COUNT = 0 THEN
          RETURN;
       END IF;
@@ -338,7 +329,42 @@ IS
       /* Пропущенная коллекция SQL атомарно равна NULL */
       WHEN COLLECTION_IS_NULL THEN
          NULL;
-   END replace_File_Names;
+   END insert_File_Names;
+
+
+   /* Проверяет нарушение уникальности финального архива */
+   FUNCTION archive_Exists (
+      p_czip_name IN MI_0600.CZIP_NAME%TYPE
+   )
+      RETURN BOOLEAN
+   IS
+      l_exists PLS_INTEGER;
+   BEGIN
+      SELECT 1
+        INTO l_exists
+        FROM MI_0600
+       WHERE CZIP_NAME = p_czip_name;
+
+      RETURN TRUE;
+
+   EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+         RETURN FALSE;
+   END archive_Exists;
+
+
+   /* Бросает сильную ошибку без изменения существующего архива */
+   PROCEDURE raise_Duplicate_Archive (
+      p_czip_name IN MI_0600.CZIP_NAME%TYPE
+   )
+   IS
+   BEGIN
+      RAISE_APPLICATION_ERROR(
+         ERR_DUPLICATE_ARCHIVE,
+         'MI_0600_DUPLICATE_ARCHIVE: archive already registered: '
+         || p_czip_name
+      );
+   END raise_Duplicate_Archive;
 
 
    /* Логика создания запроса из списка файлов */
@@ -398,133 +424,6 @@ IS
             END IF;
          END IF;
       END rollback_Own_Work;
-
-
-      /* */
-      FUNCTION reuse_Archive
-         RETURN BOOLEAN
-      IS
-         l_existing_req_id     MI_REQ.REQ_ID%TYPE;
-         l_existing_itm_id     MI_0600.ITM_ID%TYPE;
-         l_existing_inf_id     MI_REQ.INF_ID%TYPE;
-         l_existing_status_cd  MI_REQ.STATUS_CD%TYPE;
-         l_existing_req_uuid   MI_REQ.EXTERNAL_UUID%TYPE;
-         l_existing_item_uuid  MI_0600.EXTERNAL_UUID%TYPE;
-         l_archive_updated     BOOLEAN := FALSE;
-         l_reset_result        MI_ResultCtx.exec_Result_t;
-      BEGIN
-         BEGIN
-            SELECT REQ_ID,
-                   ITM_ID
-              INTO l_existing_req_id,
-                   l_existing_itm_id
-              FROM MI_0600
-             WHERE CZIP_NAME = l_czip_name;
-
-         EXCEPTION
-            WHEN NO_DATA_FOUND THEN
-               RETURN FALSE;
-         END;
-
-         /* Match the global lock order used by MI_Item_Result_Api. */
-         SELECT INF_ID,
-                STATUS_CD,
-                EXTERNAL_UUID,
-                CORRELATION_ID
-           INTO l_existing_inf_id,
-                l_existing_status_cd,
-                l_existing_req_uuid,
-                l_correlation_id
-           FROM MI_REQ
-          WHERE REQ_ID = l_existing_req_id
-            FOR UPDATE;
-
-         SELECT EXTERNAL_UUID
-           INTO l_existing_item_uuid
-           FROM MI_0600
-          WHERE ITM_ID = l_existing_itm_id
-            AND REQ_ID = l_existing_req_id
-            AND CZIP_NAME = l_czip_name
-            FOR UPDATE;
-
-         /*
-            Never rewrite an archive already being processed or sent.
-            Capture retry may refresh only a still-pending/failed request.
-         */
-         IF l_existing_status_cd IN (
-               MI_Request_Api.STATUS_NEW,
-               MI_Request_Api.STATUS_ERROR
-            )
-         THEN
-            UPDATE MI_0600
-               SET BZIP_DATA        = p_bzip_data,
-                   IZIP_SIZE        = l_zip_size,
-                   IZIP_FILES_COUNT = l_zip_files_count,
-                   ICREATE_TYPE     = NVL(p_icreate_type, 0)
-             WHERE ITM_ID = l_existing_itm_id;
-
-            replace_File_Names(
-               p_itm_id     => l_existing_itm_id,
-               p_file_names => p_file_names
-            );
-
-            IF l_existing_status_cd = MI_Request_Api.STATUS_ERROR THEN
-               l_reset_result :=
-                  MI_Request_Api.reset(
-                     p_req_id => l_existing_req_id,
-                     p_info   => 'MI_0600 archive recaptured'
-                  );
-
-               MI_ResultCtx.raise_Error(l_reset_result);
-               l_existing_status_cd := MI_Request_Api.STATUS_NEW;
-            END IF;
-
-            l_archive_updated := TRUE;
-         END IF;
-
-         l_req_id       := l_existing_req_id;
-         l_itm_id       := l_existing_itm_id;
-         l_request_uuid := l_existing_req_uuid;
-         l_item_uuid    := l_existing_item_uuid;
-         l_status_cd    := l_existing_status_cd;
-
-         l_log.context(
-            p_inf_id         => l_existing_inf_id,
-            p_req_id         => l_existing_req_id,
-            p_itm_id         => l_existing_itm_id,
-            p_correlation_id => l_correlation_id
-         );
-
-         l_log.info(
-            p_message_text => 'Existing archive request reused',
-            p_action_code  => 'reuse_archive',
-            p_details_text =>
-               TO_CLOB(
-                     'status_cd='
-                  || l_existing_status_cd
-                  || ', archive_updated='
-                  || MI_Utils.to_Char(l_archive_updated)
-               )
-         );
-
-         l_result :=
-            success_Result(
-               p_code            => 'MI_0600_REQUEST_REUSED',
-               p_info            => 'Existing archive request reused',
-               p_ret_code        => RET_OK,
-               p_req_id          => l_existing_req_id,
-               p_itm_id          => l_existing_itm_id,
-               p_request_uuid    => l_existing_req_uuid,
-               p_item_uuid       => l_existing_item_uuid,
-               p_idempotent      => TRUE,
-               p_archive_updated => l_archive_updated
-            );
-
-         l_result.parameters('status_cd') :=
-            TO_CHAR(l_existing_status_cd);
-
-         RETURN TRUE;
-      END reuse_Archive;
 
 
       ------------------------------------------------------------------------
@@ -711,13 +610,8 @@ IS
 
       DCL.SavePoint(l_savepoint_name);
 
-      IF is_Initiator_Inf(p_inf_id) AND reuse_Archive THEN
-         l_log.exit_f(
-            p_function_name => 'create_Request',
-            p_message_text  => l_result.result_code
-         );
-
-         RETURN l_result;
+      IF archive_Exists(l_czip_name) THEN
+         raise_Duplicate_Archive(l_czip_name);
       END IF;
 
       IF is_Responder_Inf(p_inf_id) AND find_Responder_Duplicate THEN
@@ -778,7 +672,7 @@ IS
       RETURNING ITM_ID
            INTO l_itm_id;
 
-      replace_File_Names(
+      insert_File_Names(
          p_itm_id     => l_itm_id,
          p_file_names => p_file_names
       );
@@ -814,31 +708,33 @@ IS
          );
 
    EXCEPTION
+      WHEN e_Duplicate_Archive THEN
+         rollback_Own_Work;
+
+         l_log.error(
+            p_message_text => 'Duplicate final archive rejected',
+            p_action_code  => 'duplicate_archive',
+            p_details_text => TO_CLOB('czip_name=' || l_czip_name)
+         );
+
+         RAISE;
+
       WHEN DUP_VAL_ON_INDEX THEN
          l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
 
          rollback_Own_Work;
 
-         /*
-            The unique CZIP_NAME constraint closes the race between two
-            concurrent initiator capture workers. After the conflicting
-            transaction commits, reuse the row it created.
-         */
-         IF is_Initiator_Inf(p_inf_id) THEN
-            DCL.SavePoint(l_savepoint_name);
+         /* UK_MI_0600__CZIP_NAME closes a concurrent capture race. */
+         IF archive_Exists(l_czip_name) THEN
+            l_log.error(
+               p_message_text => 'Concurrent duplicate archive rejected',
+               p_action_code  => 'duplicate_archive',
+               p_details_text => TO_CLOB(l_sqlerrm)
+            );
 
-            IF reuse_Archive THEN
-               l_log.exit_f(
-                  p_function_name => 'create_Request',
-                  p_message_text  => l_result.result_code
-               );
-
-               RETURN l_result;
-            END IF;
+            raise_Duplicate_Archive(l_czip_name);
          END IF;
-
-         rollback_Own_Work;
 
          l_log.error(
             p_message_text => 'create_Request unique constraint failed',
@@ -933,6 +829,9 @@ IS
       );
 
    EXCEPTION
+      WHEN e_Duplicate_Archive THEN
+         RAISE;
+
       WHEN OTHERS THEN
          p_req_id   := NULL;
          p_itm_id   := NULL;
