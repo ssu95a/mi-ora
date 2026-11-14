@@ -117,9 +117,12 @@ BEGIN
       p_bzip_data         => l_zip_blob,
       p_izip_size         => DBMS_LOB.getlength(l_zip_blob),
       p_izip_files_count  => 2,
-      p_file_names_json   => TO_CLOB(
-         '["first.xml","second.xml","first.xml"]'
-      ),
+      p_file_names        =>
+         SYS.ODCIVARCHAR2LIST(
+            'first.xml',
+            'second.xml',
+            'first.xml'
+         ),
       p_original_req_uuid => NULL,
       p_message_uuid      => NULL,
       p_ctaxreq_id        => NULL,
@@ -164,7 +167,7 @@ BEGIN
       p_bzip_data         => l_zip_blob,
       p_izip_size         => DBMS_LOB.getlength(l_zip_blob),
       p_izip_files_count  => 1,
-      p_file_names_json   => TO_CLOB('["renamed.xml"]'),
+      p_file_names        => SYS.ODCIVARCHAR2LIST('renamed.xml'),
       p_original_req_uuid => NULL,
       p_message_uuid      => NULL,
       p_ctaxreq_id        => NULL,

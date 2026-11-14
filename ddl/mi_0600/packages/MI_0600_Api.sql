@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_0600_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.1.0} {14.11.2026} Sulimoff$';
+      '$Id: {1.1.1} {14.11.2026} Sulimoff$';
 
 
    RET_FAIL     CONSTANT NUMBER := -1;
@@ -26,13 +26,9 @@ IS
       Для ответчиков 602/604/612 дополнительно распознаётся повтор по
       ORIGINAL_REQ_UUID внутри того же INF_ID.
 
-      JDBC boundary содержит только стандартные SQL-типы. Список файлов
-      передаётся JSON-массивом в CLOB, например:
-
-         ["one.xml", "dir/two.xml"]
-
-      PL/SQL record MI_ResultCtx и SQL collection используются только внутри
-      package body и не выходят в JDBC contract.
+      JDBC boundary не содержит PL/SQL records. Список файлов передаётся как
+      schema-level SQL collection SYS.ODCIVARCHAR2LIST, поддерживаемая Oracle
+      JDBC через java.sql.Array/OracleArray.
 
       Package не выполняет COMMIT. При ошибке откатывает только собственную
       работу через DCL.SavePoint/RollBack.
@@ -43,7 +39,7 @@ IS
       p_bzip_data             IN MI_0600.BZIP_DATA%TYPE,
       p_izip_size             IN MI_0600.IZIP_SIZE%TYPE,
       p_izip_files_count      IN MI_0600.IZIP_FILES_COUNT%TYPE,
-      p_file_names_json       IN CLOB,
+      p_file_names            IN SYS.ODCIVARCHAR2LIST,
 
       p_original_req_uuid     IN MI_REQ.ORIGINAL_REQ_UUID%TYPE,
       p_message_uuid          IN MI_REQ.MESSAGE_UUID%TYPE,
@@ -908,7 +904,7 @@ IS
       p_bzip_data             IN MI_0600.BZIP_DATA%TYPE,
       p_izip_size             IN MI_0600.IZIP_SIZE%TYPE,
       p_izip_files_count      IN MI_0600.IZIP_FILES_COUNT%TYPE,
-      p_file_names_json       IN CLOB,
+      p_file_names            IN SYS.ODCIVARCHAR2LIST,
 
       p_original_req_uuid     IN MI_REQ.ORIGINAL_REQ_UUID%TYPE,
       p_message_uuid          IN MI_REQ.MESSAGE_UUID%TYPE,
@@ -921,57 +917,12 @@ IS
       p_ret_info              OUT VARCHAR2
    )
    IS
-      l_file_names  SYS.ODCIVARCHAR2LIST := SYS.ODCIVARCHAR2LIST();
-      l_json_valid  PLS_INTEGER;
-      l_result      MI_ResultCtx.exec_Result_t;
+      l_result MI_ResultCtx.exec_Result_t;
    BEGIN
       p_req_id   := NULL;
       p_itm_id   := NULL;
       p_ret_code := RET_FAIL;
       p_ret_info := NULL;
-
-      IF p_file_names_json IS NOT NULL
-         AND DBMS_LOB.getlength(p_file_names_json) > 0
-      THEN
-         SELECT CASE
-                   WHEN p_file_names_json IS JSON STRICT THEN 1
-                   ELSE 0
-                END
-           INTO l_json_valid
-           FROM DUAL;
-
-         IF l_json_valid = 0 THEN
-            p_ret_info :=
-               'MI_0600_INVALID_FILE_NAMES_JSON: '
-               || 'p_file_names_json must contain valid JSON';
-            RETURN;
-         END IF;
-
-         SELECT file_name
-           BULK COLLECT INTO l_file_names
-           FROM JSON_TABLE(
-                   p_file_names_json,
-                   '$[*]'
-                   COLUMNS (
-                      item_order FOR ORDINALITY,
-                      file_name  VARCHAR2(300) PATH '$' ERROR ON ERROR
-                   )
-                )
-          ORDER BY item_order;
-
-         IF l_file_names.COUNT > 0 THEN
-            FOR i IN 1 .. l_file_names.COUNT LOOP
-               IF TRIM(l_file_names(i)) IS NULL THEN
-                  p_ret_info :=
-                     'MI_0600_INVALID_FILE_NAME: '
-                     || 'file name at JSON position '
-                     || i
-                     || ' is NULL or blank';
-                  RETURN;
-               END IF;
-            END LOOP;
-         END IF;
-      END IF;
 
       l_result :=
          create_Request_Impl(
@@ -980,7 +931,7 @@ IS
             p_bzip_data         => p_bzip_data,
             p_izip_size         => p_izip_size,
             p_izip_files_count  => p_izip_files_count,
-            p_file_names        => l_file_names,
+            p_file_names        => p_file_names,
             p_original_req_uuid => p_original_req_uuid,
             p_message_uuid      => p_message_uuid,
             p_ctaxreq_id        => p_ctaxreq_id,
