@@ -1,8 +1,9 @@
 CREATE OR REPLACE PACKAGE MI_0600_Api
 IS
 
-   VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.1.1} {14.11.2026} Sulimoff$';
+   /* MI-edo. Пакет бизнес-логики для 404 файлов */
+
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.2} {14.11.2026} Sulimoff$';
 
 
    RET_FAIL     CONSTANT NUMBER := -1;
@@ -10,7 +11,7 @@ IS
    RET_NO_DATA  CONSTANT NUMBER :=  1;
    RET_EXISTS   CONSTANT NUMBER :=  4;
 
-
+   /* Версия*/
    FUNCTION get_Version
       RETURN VARCHAR2;
 
@@ -18,23 +19,19 @@ IS
    /*
       Атомарно создаёт MI_REQ, один MI_0600 item и список имён файлов.
 
-      Для инициаторов 601/603/611 CZIP_NAME является ключом
-      идемпотентности. Повторный capture возвращает существующие REQ_ID и
+      Повторный capture возвращает существующие REQ_ID и
       ITM_ID. Пока request находится в NEW/ERROR, архив и список файлов
       обновляются; после начала обработки существующий item не изменяется.
 
       Для ответчиков 602/604/612 дополнительно распознаётся повтор по
       ORIGINAL_REQ_UUID внутри того же INF_ID.
 
-      JDBC boundary не содержит PL/SQL records. Список файлов передаётся как
-      schema-level SQL collection SYS.ODCIVARCHAR2LIST, поддерживаемая Oracle
-      JDBC через java.sql.Array/OracleArray.
-
-      Package не выполняет COMMIT. При ошибке откатывает только собственную
-      работу через DCL.SavePoint/RollBack.
+      Package не выполняет COMMIT. 
+      При ошибке откатывает только собственную работу через DCL.SavePoint/RollBack.
    */
    PROCEDURE create_Request (
       p_inf_id                IN MI_REQ.INF_ID%TYPE,
+      
       p_czip_name             IN MI_0600.CZIP_NAME%TYPE,
       p_bzip_data             IN MI_0600.BZIP_DATA%TYPE,
       p_izip_size             IN MI_0600.IZIP_SIZE%TYPE,
@@ -106,22 +103,16 @@ IS
 
 END MI_0600_Api;
 /
-
-
 CREATE OR REPLACE PACKAGE BODY MI_0600_Api
 IS
 
    cLogger CONSTANT VARCHAR2(64) := 'mi.0600';
 
-
-   g_log CONSTANT MI_Logger_T :=
-      MI_Logger_T(
-         p_logger_name  => cLogger,
-         p_package_name => $$PLSQL_UNIT
-      );
+   -- глобальный логгер
+   g_log CONSTANT MI_Logger_T := MI_Logger_T( p_logger_name  => cLogger, p_package_name => $$PLSQL_UNIT );
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2
    IS
@@ -129,8 +120,7 @@ IS
       RETURN VERSION;
    END get_Version;
 
-
-   ---------------------------------------------------------------------------
+   /* Список поддерживаемых ВС */
    FUNCTION is_Supported_Inf (
       p_inf_id IN MI_REQ.INF_ID%TYPE
    )
@@ -141,7 +131,7 @@ IS
    END is_Supported_Inf;
 
 
-   ---------------------------------------------------------------------------
+   /* Признак является ли ВС инициатором */
    FUNCTION is_Initiator_Inf (
       p_inf_id IN MI_REQ.INF_ID%TYPE
    )
@@ -152,7 +142,7 @@ IS
    END is_Initiator_Inf;
 
 
-   ---------------------------------------------------------------------------
+   /* Признак является ли ВС ответчиком */
    FUNCTION is_Responder_Inf (
       p_inf_id IN MI_REQ.INF_ID%TYPE
    )
@@ -163,7 +153,7 @@ IS
    END is_Responder_Inf;
 
 
-   ---------------------------------------------------------------------------
+   /* Готовит объект с успешным результатом работы */
    FUNCTION success_Result (
       p_code             IN VARCHAR2,
       p_info             IN VARCHAR2,
@@ -181,11 +171,7 @@ IS
    IS
       l_result MI_ResultCtx.exec_Result_t;
    BEGIN
-      l_result :=
-         MI_ResultCtx.success(
-            p_code => p_code,
-            p_info => p_info
-         );
+      l_result := MI_ResultCtx.success( p_code => p_code, p_info => p_info );
 
       l_result.parameters('ret_code') := TO_CHAR(p_ret_code);
 
@@ -206,20 +192,18 @@ IS
       END IF;
 
       IF p_idempotent IS NOT NULL THEN
-         l_result.parameters('idempotent') :=
-            MI_Utils.to_Char(p_idempotent);
+         l_result.parameters('idempotent') := MI_Utils.to_Char(p_idempotent);
       END IF;
 
       IF p_archive_updated IS NOT NULL THEN
-         l_result.parameters('archive_updated') :=
-            MI_Utils.to_Char(p_archive_updated);
+         l_result.parameters('archive_updated') := MI_Utils.to_Char(p_archive_updated);
       END IF;
 
       RETURN l_result;
    END success_Result;
 
 
-   ---------------------------------------------------------------------------
+    /* Готовит объект с результатом работы при ошибке*/
    FUNCTION failure_Result (
       p_code      IN VARCHAR2,
       p_info      IN VARCHAR2,
@@ -252,7 +236,7 @@ IS
    END failure_Result;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION result_Number (
       p_result  IN MI_ResultCtx.exec_Result_t,
       p_name    IN VARCHAR2
@@ -261,14 +245,13 @@ IS
    IS
    BEGIN
       RETURN TO_NUMBER(p_result.parameters(p_name));
-
    EXCEPTION
       WHEN NO_DATA_FOUND OR VALUE_ERROR THEN
          RETURN NULL;
    END result_Number;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE export_Result (
       p_result    IN  MI_ResultCtx.exec_Result_t,
       p_ret_code  OUT NUMBER,
@@ -276,6 +259,7 @@ IS
    )
    IS
    BEGIN
+   
       p_ret_code := result_Number(p_result, 'ret_code');
 
       IF p_ret_code IS NULL THEN
@@ -307,7 +291,7 @@ IS
    END export_Result;
 
 
-   ---------------------------------------------------------------------------
+   /* Заменяет файлы вапросе */
    PROCEDURE replace_File_Names (
       p_itm_id      IN MI_0600.ITM_ID%TYPE,
       p_file_names  IN SYS.ODCIVARCHAR2LIST
@@ -316,6 +300,7 @@ IS
       l_index      PLS_INTEGER;
       l_file_name  MI_0600_F.CZIP_FILE_NAME%TYPE;
    BEGIN
+   
       DELETE FROM MI_0600_F
        WHERE ITM_ID = p_itm_id;
 
@@ -326,39 +311,40 @@ IS
       l_index := p_file_names.FIRST;
 
       WHILE l_index IS NOT NULL LOOP
+   
          l_file_name := TRIM(p_file_names(l_index));
 
          IF l_file_name IS NOT NULL THEN
+
             BEGIN
-               INSERT INTO MI_0600_F (
-                  ITM_ID,
-                  CZIP_FILE_NAME
-               )
-               VALUES (
-                  p_itm_id,
-                  l_file_name
-               );
+            
+               INSERT INTO MI_0600_F 
+                  ( ITM_ID, CZIP_FILE_NAME )
+               VALUES 
+                  ( p_itm_id, l_file_name );
 
             EXCEPTION
-               /* Duplicate names in one supplied list do not duplicate a link. */
+               /* Повторяющиеся имена в одном списке не дублируют ссылку. */
                WHEN DUP_VAL_ON_INDEX THEN
                   NULL;
             END;
          END IF;
 
          l_index := p_file_names.NEXT(l_index);
+         
       END LOOP;
 
    EXCEPTION
-      /* An omitted SQL collection is atomically NULL. */
+      /* Пропущенная коллекция SQL атомарно равна NULL */
       WHEN COLLECTION_IS_NULL THEN
          NULL;
    END replace_File_Names;
 
 
-   ---------------------------------------------------------------------------
+   /* Логика создания запроса из списка файлов */
    FUNCTION create_Request_Impl (
       p_inf_id                IN MI_REQ.INF_ID%TYPE,
+      
       p_czip_name             IN MI_0600.CZIP_NAME%TYPE,
       p_bzip_data             IN MI_0600.BZIP_DATA%TYPE,
       p_izip_size             IN MI_0600.IZIP_SIZE%TYPE        DEFAULT NULL,
@@ -393,7 +379,6 @@ IS
       l_log                MI_Logger_T := g_log;
 
 
-      ------------------------------------------------------------------------
       PROCEDURE rollback_Own_Work
       IS
          l_name         DCL.T_Name;
@@ -415,7 +400,7 @@ IS
       END rollback_Own_Work;
 
 
-      ------------------------------------------------------------------------
+      /* */
       FUNCTION reuse_Archive
          RETURN BOOLEAN
       IS
