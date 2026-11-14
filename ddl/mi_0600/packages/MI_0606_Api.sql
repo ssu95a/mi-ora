@@ -161,8 +161,6 @@ IS
 
 END MI_0606_Api;
 /
-
-
 CREATE OR REPLACE PACKAGE BODY MI_0606_Api
 IS
 
@@ -176,7 +174,7 @@ IS
    g_log CONSTANT MI_Logger_T := MI_Logger_T( p_logger_name => cLogger, p_package_name => $$PLSQL_UNIT );
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2
    IS
@@ -229,19 +227,15 @@ IS
          g_log.error(
             p_message_text => 'DCL rollback failed',
             p_action_code  => 'rollback',
-            p_details_text =>
-               TO_CLOB(
-                     'savepoint='
-                  || l_name
-                  || '; error='
-                  || SQLERRM
-               )
+            p_details_text => TO_CLOB( 'savepoint=' || l_name || '; error=' || SQLERRM )
          );
 
          RETURN FALSE;
+         
    END rollback_Savepoint;
 
 
+   /* */
    PROCEDURE rollback_Or_Raise (
       p_name  IN OUT DCL.T_Name,
       p_code  IN     VARCHAR2,
@@ -258,7 +252,7 @@ IS
    END rollback_Or_Raise;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION journal_Name (
       p_outfile_id IN RSD_OUTFILES.ID%TYPE
    )
@@ -271,13 +265,12 @@ IS
          Для 606 используем его как технический ключ source row.
          Исходное имя документа хранится в MI_0600_F.
       */
-      RETURN
-            'MI_0606_'
-         || TO_CHAR(p_outfile_id);
+      RETURN 'MI_0606_'  || TO_CHAR(p_outfile_id);
+      
    END journal_Name;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION map_Doc_Type (
       p_file_type IN RSD_OUTFILES.FILE_TYPE%TYPE
    )
@@ -285,8 +278,7 @@ IS
    IS
       l_file_type RSD_OUTFILES.FILE_TYPE%TYPE;
    BEGIN
-      l_file_type :=
-         UPPER(TRIM(p_file_type));
+      l_file_type := UPPER(TRIM(p_file_type));
 
       /*
          Подтверждённый business mapping.
@@ -300,10 +292,11 @@ IS
             WHEN cFileTypePb2 THEN cDocTypePb2
             ELSE NULL
          END;
+         
    END map_Doc_Type;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION map_Error_Code (
       p_file_type IN RSD_OUTFILES.FILE_TYPE%TYPE
    )
@@ -318,7 +311,7 @@ IS
    END map_Error_Code;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION clob_To_Utf8_Blob (
       p_value IN CLOB
    )
@@ -356,34 +349,30 @@ IS
       );
 
 
-      IF l_warning IS NULL
-         OR l_warning <> DBMS_LOB.NO_WARNING
+      IF l_warning IS NULL OR l_warning <> DBMS_LOB.NO_WARNING
       THEN
          raise_Technical_Error(
             p_code => 'MI_0606_CLOB_CONVERSION_WARNING',
-            p_info =>
-                  'CLOB to UTF-8 BLOB conversion warning='
-               || l_warning
+            p_info => 'CLOB to UTF-8 BLOB conversion warning=' || l_warning
          );
       END IF;
-
 
       RETURN l_blob;
 
 
    EXCEPTION
       WHEN OTHERS THEN
-         IF l_blob IS NOT NULL
-            AND DBMS_LOB.isTemporary(l_blob) = 1
+         IF l_blob IS NOT NULL AND DBMS_LOB.isTemporary(l_blob) = 1
          THEN
             DBMS_LOB.freeTemporary(l_blob);
          END IF;
 
          RAISE;
+         
    END clob_To_Utf8_Blob;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE free_Temporary_Blob (
       p_blob IN OUT NOCOPY BLOB
    )
@@ -399,7 +388,7 @@ IS
    END free_Temporary_Blob;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION find_Existing_Source (
       p_outfile_id  IN  RSD_OUTFILES.ID%TYPE,
 
@@ -440,7 +429,7 @@ IS
    END find_Existing_Source;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE create_Request (
       p_outfile_id  IN  RSD_OUTFILES.ID%TYPE,
 
@@ -482,7 +471,6 @@ IS
       l_log             MI_Logger_T := g_log;
 
 
-      ------------------------------------------------------------------------
       FUNCTION rollback_Own_Work
          RETURN BOOLEAN
       IS
@@ -491,45 +479,35 @@ IS
       END rollback_Own_Work;
 
 
-      ------------------------------------------------------------------------
       PROCEDURE rollback_For_Result
       IS
       BEGIN
-         IF NOT rollback_Own_Work THEN
+      
+         IF NOT rollback_Own_Work() THEN
             raise_Technical_Error(
                p_code => 'MI_0606_ROLLBACK_FAILED',
-               p_info =>
-                  'Не удалось откатить собственную работу; '
-                  || 'требуется полный rollback транзакции'
+               p_info => 'Не удалось откатить собственную работу; требуется полный rollback транзакции'
             );
          END IF;
+         
       END rollback_For_Result;
 
 
-      ------------------------------------------------------------------------
       PROCEDURE return_Existing
       IS
       BEGIN
+      
          p_req_id   := l_req_id;
          p_itm_id   := l_itm_id;
          p_ret_code := RET_EXISTS;
 
-         p_ret_info :=
-            SUBSTR(
-                  'RSD_OUTFILES already registered'
-               || '; id='
-               || p_outfile_id
-               || '; req_id='
-               || l_req_id
-               || '; itm_id='
-               || l_itm_id,
-               1,
-               4000
-            );
+         p_ret_info := SUBSTR( 'RSD_OUTFILES already registered' || '; id=' || p_outfile_id || '; req_id=' || l_req_id || '; itm_id=' || l_itm_id,  1, 4000  );
+         
       END return_Existing;
 
 
    BEGIN
+   
       p_req_id   := NULL;
       p_itm_id   := NULL;
       p_ret_code := RET_FAIL;
@@ -543,42 +521,31 @@ IS
       END IF;
 
 
-      ------------------------------------------------------------------------
       -- Идемпотентный повтор уже зарегистрированной source row.
-      ------------------------------------------------------------------------
-      IF find_Existing_Source(
-            p_outfile_id => p_outfile_id,
-            p_req_id     => l_req_id,
-            p_itm_id     => l_itm_id
-         )
+      IF find_Existing_Source( p_outfile_id => p_outfile_id, p_req_id => l_req_id, p_itm_id => l_itm_id )
       THEN
          return_Existing;
          RETURN;
       END IF;
 
 
-      l_log.enter_f(
-         p_function_name => 'create_Request',
-         p_message_text  =>
-               'RSD_OUTFILES.id='
-            || p_outfile_id
-      );
-
+      l_log.enter_f( p_function_name => 'create_Request', p_message_text  => 'RSD_OUTFILES.id=' || p_outfile_id );
 
       DCL.SavePoint(l_savepoint_name);
 
       IF l_savepoint_name IS NULL THEN
+      
          raise_Technical_Error(
             p_code => 'MI_0606_SAVEPOINT_UNAVAILABLE',
             p_info => 'DCL did not create the capture savepoint'
          );
+         
       END IF;
 
 
-      ------------------------------------------------------------------------
       -- Источник блокируется до COMMIT / ROLLBACK вызывающего кода.
-      ------------------------------------------------------------------------
       BEGIN
+      
          SELECT FILE_TYPE,
                 FILENAME,
                 REC_STATE,
@@ -599,24 +566,19 @@ IS
 
       EXCEPTION
          WHEN NO_DATA_FOUND THEN
-            rollback_For_Result;
+             rollback_For_Result();
 
             p_ret_code := RET_NO_DATA;
-            p_ret_info :=
-               'RSD_OUTFILES row not found: id='
-               || p_outfile_id;
+            p_ret_info := 'RSD_OUTFILES row not found: id=' || p_outfile_id;
 
             RETURN;
       END;
 
 
-      ------------------------------------------------------------------------
       -- После конкурентного capture строка уже могла сменить REC_STATE.
-      ------------------------------------------------------------------------
-      IF l_rec_state IS NULL
-         OR TRIM(l_rec_state) <> '0'
+      IF l_rec_state IS NULL OR TRIM(l_rec_state) <> '0'
       THEN
-         rollback_For_Result;
+         rollback_For_Result();
 
 
          IF find_Existing_Source(
@@ -646,85 +608,62 @@ IS
       END IF;
 
 
-      l_file_name :=
-         TRIM(l_file_name);
-
-      l_task_id :=
-         TRIM(l_task_id);
-
-      l_doc_key :=
-         TRIM(l_doc_key);
+      l_file_name := TRIM(l_file_name);
+      l_task_id   := TRIM(l_task_id);
+      l_doc_key   := TRIM(l_doc_key);
 
 
       IF l_file_name IS NULL THEN
-         rollback_For_Result;
+
+         rollback_For_Result();
 
          p_ret_code := RET_FAIL;
          p_ret_info := 'RSD_OUTFILES.FILENAME is empty';
 
          RETURN;
+         
       END IF;
 
 
-      IF l_task_id IS NULL
-         OR NOT MI_Utils.is_Uuid(l_task_id)
+      IF l_task_id IS NULL OR NOT MI_Utils.is_Uuid(l_task_id)
       THEN
-         rollback_For_Result;
+      
+         rollback_For_Result();
 
          p_ret_code := RET_FAIL;
-
-         p_ret_info :=
-               'RSD_OUTFILES.TASKID must be UUID: '
-            || NVL(l_task_id, '<NULL>');
+         p_ret_info := 'RSD_OUTFILES.TASKID must be UUID: ' || NVL(l_task_id, '<NULL>');
 
          RETURN;
+         
       END IF;
 
 
-      IF l_doc_key IS NULL
-         OR NOT MI_Utils.is_Uuid(l_doc_key)
+      IF l_doc_key IS NULL OR NOT MI_Utils.is_Uuid(l_doc_key)
       THEN
-         rollback_For_Result;
+         rollback_For_Result();
 
          p_ret_code := RET_FAIL;
-
-         p_ret_info :=
-               'RSD_OUTFILES.DOCKEY must be UUID: '
-            || NVL(l_doc_key, '<NULL>');
+         p_ret_info := 'RSD_OUTFILES.DOCKEY must be UUID: ' || NVL(l_doc_key, '<NULL>');
 
          RETURN;
+         
       END IF;
 
-
-      ------------------------------------------------------------------------
       -- Business mapping RSD -> SEND_DOCUMENT.
-      ------------------------------------------------------------------------
-      l_doc_type :=
-         map_Doc_Type(l_file_type);
-
-      l_error_code :=
-         map_Error_Code(l_file_type);
+      l_doc_type   := map_Doc_Type(l_file_type);
+      l_error_code := map_Error_Code(l_file_type);
 
 
-      IF l_doc_type IS NULL
-         AND l_error_code IS NULL
+      IF l_doc_type IS NULL AND l_error_code IS NULL
       THEN
-         rollback_For_Result;
 
-         p_ret_code :=
-            RET_UNSUPPORTED_FILE_TYPE;
+         rollback_For_Result();
 
-         p_ret_info :=
-            SUBSTR(
-                  'Unsupported RSD_OUTFILES.FILE_TYPE='
-               || NVL(TRIM(l_file_type), '<NULL>')
-               || '; id='
-               || p_outfile_id,
-               1,
-               4000
-            );
+         p_ret_code := RET_UNSUPPORTED_FILE_TYPE;
+         p_ret_info := SUBSTR( 'Unsupported RSD_OUTFILES.FILE_TYPE=' || NVL(TRIM(l_file_type), '<NULL>') || '; id='  || p_outfile_id, 1, 4000  );
 
          RETURN;
+         
       END IF;
 
 
@@ -733,53 +672,44 @@ IS
          contract without rereading RSD_OUTFILES. Do not admit another mapping
          until its resolved value has a dedicated snapshot field.
       */
-      IF l_doc_type IS NULL
-         OR l_doc_type <> cDocTypePb2
-         OR l_error_code IS NOT NULL
+      IF l_doc_type IS NULL OR l_doc_type <> cDocTypePb2 OR l_error_code IS NOT NULL
       THEN
-         rollback_For_Result;
+         
+         rollback_For_Result();
 
          p_ret_code := RET_UNSUPPORTED_FILE_TYPE;
-         p_ret_info :=
-            'FILE_TYPE mapping has no durable MI journal snapshot';
+         p_ret_info := 'FILE_TYPE mapping has no durable MI journal snapshot';
 
          RETURN;
+         
       END IF;
 
 
-      ------------------------------------------------------------------------
       -- Формируем byte snapshot исходящего документа.
       --
       -- Если business module заполнил BINFILE, используем его.
       -- Иначе FILEBODY конвертируется в UTF-8.
-      ------------------------------------------------------------------------
-      IF l_bin_file IS NOT NULL
-         AND DBMS_LOB.getlength(l_bin_file) > 0
+      IF l_bin_file IS NOT NULL AND DBMS_LOB.getlength(l_bin_file) > 0
       THEN
-         l_payload :=
-            l_bin_file;
-
+         l_payload := l_bin_file;
       ELSIF l_file_body IS NOT NULL
          AND DBMS_LOB.getlength(l_file_body) > 0
       THEN
-         l_payload :=
-            clob_To_Utf8_Blob(l_file_body);
-
+         l_payload := clob_To_Utf8_Blob(l_file_body);
          l_payload_temp := TRUE;
 
       ELSE
-         rollback_For_Result;
+
+         rollback_For_Result();
 
          p_ret_code := RET_FAIL;
          p_ret_info := 'RSD_OUTFILES contains no document body';
 
          RETURN;
       END IF;
+      
 
-
-      ------------------------------------------------------------------------
       -- Создаём MI_REQ исходящего 606.
-      ------------------------------------------------------------------------
       l_request_result :=
          MI_Request_Api.create_Request(
             p_inf_id        => cInfId,
@@ -799,14 +729,8 @@ IS
       END IF;
 
 
-      l_req_id :=
-         TO_NUMBER(
-            l_request_result.parameters('req_id')
-         );
-
-      l_correlation_id :=
-         l_request_result.parameters('correlation_id');
-
+      l_req_id         := TO_NUMBER( l_request_result.parameters('req_id') );
+      l_correlation_id := l_request_result.parameters('correlation_id');
 
       IF l_req_id IS NULL THEN
          raise_Technical_Error(
@@ -816,14 +740,11 @@ IS
       END IF;
 
 
-      ------------------------------------------------------------------------
       -- Один RSD_OUTFILES = один MI_0600 item.
       --
       -- EXTERNAL_UUID намеренно равен DOCKEY.
       -- По нему позже приходит DOCUMENT_STATUS.
-      ------------------------------------------------------------------------
-      l_journal_name :=
-         journal_Name(p_outfile_id);
+      l_journal_name := journal_Name(p_outfile_id);
 
 
       INSERT INTO MI_0600 (
@@ -852,9 +773,7 @@ IS
            INTO l_itm_id;
 
 
-      ------------------------------------------------------------------------
       -- Реальное business filename.
-      ------------------------------------------------------------------------
       INSERT INTO MI_0600_F (
          ITM_ID,
          CZIP_FILE_NAME
@@ -865,9 +784,7 @@ IS
       );
 
 
-      ------------------------------------------------------------------------
       -- Source row считается зарегистрированной в MI journal.
-      ------------------------------------------------------------------------
       UPDATE RSD_OUTFILES
          SET REC_STATE = '1'
        WHERE ID = p_outfile_id
@@ -875,14 +792,12 @@ IS
 
 
       IF SQL%ROWCOUNT <> 1 THEN
-         raise_Technical_Error(
+      
+         raise_Technical_Error( 
             p_code => 'MI_0606_SOURCE_STATE_NOT_UPDATED',
-            p_info =>
-                  'RSD_OUTFILES state update failed: id='
-               || p_outfile_id
-               || ', rows='
-               || SQL%ROWCOUNT
+            p_info => 'RSD_OUTFILES state update failed: id=' || p_outfile_id || ', rows=' || SQL%ROWCOUNT 
          );
+         
       END IF;
 
 
@@ -890,30 +805,19 @@ IS
       p_itm_id   := l_itm_id;
       p_ret_code := RET_OK;
 
-      p_ret_info :=
-         'SEND_DOCUMENT request created';
+      p_ret_info := 'SEND_DOCUMENT request created';
 
-
-      l_log.context(
+      l_log.context (
          p_inf_id         => cInfId,
          p_req_id         => l_req_id,
          p_itm_id         => l_itm_id,
          p_correlation_id => l_correlation_id
       );
 
-
       l_log.info(
          p_message_text => 'SEND_DOCUMENT request created',
          p_action_code  => 'create',
-         p_details_text =>
-            TO_CLOB(
-                  'RSD_OUTFILES.id='
-               || p_outfile_id
-               || ', docKey='
-               || l_doc_key
-               || ', fileType='
-               || l_file_type
-            )
+         p_details_text => TO_CLOB( 'RSD_OUTFILES.id=' || p_outfile_id || ', docKey='  || l_doc_key || ', fileType=' || l_file_type )
       );
 
 
@@ -930,8 +834,8 @@ IS
 
    EXCEPTION
       WHEN OTHERS THEN
-         l_sqlerrm := SQLERRM;
-         l_rollback_ok := rollback_Own_Work;
+         l_sqlerrm     := SQLERRM;
+         l_rollback_ok := rollback_Own_Work();
 
 
          IF l_payload_temp THEN
@@ -953,12 +857,12 @@ IS
                )
          );
 
-
          RAISE;
+         
    END create_Request;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE prepare_Send_Document (
       p_req_id       IN  MI_REQ.REQ_ID%TYPE,
 
@@ -1098,7 +1002,6 @@ IS
    END prepare_Send_Document;
 
 
-   ---------------------------------------------------------------------------
    /*
       Находит request/item по request UUID и проверяет docKey.
 
@@ -1157,7 +1060,7 @@ IS
    END lock_By_Request;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE lock_By_Doc_Key (
       p_doc_key        IN  MI_0600.EXTERNAL_UUID%TYPE,
 
@@ -1200,7 +1103,7 @@ IS
    END lock_By_Doc_Key;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE apply_Terminal_Result (
       p_req_id          IN MI_REQ.REQ_ID%TYPE,
       p_itm_id          IN MI_0600.ITM_ID%TYPE,
@@ -1292,11 +1195,8 @@ IS
       END IF;
 
 
-      ------------------------------------------------------------------------
       -- Business result получен, integration lifecycle завершён.
-      ------------------------------------------------------------------------
-      l_transition :=
-         MI_Request_Api.to_Success(p_req_id);
+      l_transition := MI_Request_Api.to_Success(p_req_id);
 
 
       IF MI_ResultCtx.is_Failed(l_transition) THEN
@@ -1313,10 +1213,11 @@ IS
 
       p_ret_code := RET_OK;
       p_ret_info := 'Terminal result applied';
+      
    END apply_Terminal_Result;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE apply_Document_Submitted (
       p_request_uuid   IN  MI_REQ.EXTERNAL_UUID%TYPE,
       p_message_uuid   IN  MI_REQ.MESSAGE_UUID%TYPE,
@@ -1350,20 +1251,19 @@ IS
          rollback_Or_Raise(
             p_name => l_savepoint,
             p_code => 'MI_0606_SUBMITTED_ROLLBACK_FAILED',
-            p_info =>
-               'Не удалось завершить DOCUMENT_SUBMITTED без изменений; '
-               || 'требуется полный rollback транзакции'
+            p_info => 'Не удалось завершить DOCUMENT_SUBMITTED без изменений; требуется полный rollback транзакции'
          );
       END rollback_For_Result;
+      
    BEGIN
+   
       p_req_id   := NULL;
       p_itm_id   := NULL;
       p_ret_code := RET_FAIL;
       p_ret_info := NULL;
 
 
-      IF p_request_uuid IS NULL
-         OR NOT MI_Utils.is_Uuid(TRIM(p_request_uuid))
+      IF p_request_uuid IS NULL OR NOT MI_Utils.is_Uuid(TRIM(p_request_uuid))
       THEN
          raise_Technical_Error(
             p_code => 'MI_0606_INVALID_REQUEST_UUID',
@@ -1372,8 +1272,7 @@ IS
       END IF;
 
 
-      IF p_message_uuid IS NULL
-         OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
+      IF p_message_uuid IS NULL OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
       THEN
          raise_Technical_Error(
             p_code => 'MI_0606_INVALID_MESSAGE_UUID',
@@ -1382,8 +1281,7 @@ IS
       END IF;
 
 
-      IF p_doc_key IS NULL
-         OR NOT MI_Utils.is_Uuid(TRIM(p_doc_key))
+      IF p_doc_key IS NULL OR NOT MI_Utils.is_Uuid(TRIM(p_doc_key))
       THEN
          raise_Technical_Error(
             p_code => 'MI_0606_INVALID_DOC_KEY',
@@ -1392,7 +1290,7 @@ IS
       END IF;
 
 
-      IF p_response_time IS NULL THEN
+      IF p_response_time IS NULL THEN 
          raise_Technical_Error(
             p_code => 'MI_0606_RESPONSE_TIME_REQUIRED',
             p_info => 'DOCUMENT_SUBMITTED response_time must not be NULL'
@@ -1400,22 +1298,14 @@ IS
       END IF;
 
 
-      l_status :=
-         UPPER(TRIM(p_status));
+      l_status := UPPER(TRIM(p_status));
 
 
-      IF l_status IS NULL
-         OR l_status NOT IN (
-            'SUCCESS',
-            'ERROR',
-            'VALIDATION_ERROR'
-         )
+      IF l_status IS NULL OR l_status NOT IN ( 'SUCCESS', 'ERROR', 'VALIDATION_ERROR' )
       THEN
          raise_Technical_Error(
             p_code => 'MI_0606_UNSUPPORTED_SUBMITTED_STATUS',
-            p_info =>
-                  'Unsupported DOCUMENT_SUBMITTED.status='
-               || NVL(l_status, '<NULL>')
+            p_info => 'Unsupported DOCUMENT_SUBMITTED.status=' || NVL(l_status, '<NULL>')
          );
       END IF;
 
@@ -1431,6 +1321,7 @@ IS
 
 
       BEGIN
+      
          lock_By_Request(
             p_request_uuid => p_request_uuid,
             p_doc_key      => p_doc_key,
@@ -1444,7 +1335,8 @@ IS
 
       EXCEPTION
          WHEN NO_DATA_FOUND THEN
-            rollback_For_Result;
+         
+            rollback_For_Result();
 
             p_ret_code := RET_NO_DATA;
             p_ret_info := 'SEND_DOCUMENT request/item not found';
@@ -1461,12 +1353,10 @@ IS
       );
 
 
-      ------------------------------------------------------------------------
       -- SUCCESS является промежуточным ACK.
-      ------------------------------------------------------------------------
-      IF l_status = 'SUCCESS' THEN
-         IF l_status_cd = MI_Request_Api.STATUS_SENT THEN
-            rollback_For_Result;
+      IF l_status = 'SUCCESS' THEN IF l_status_cd = MI_Request_Api.STATUS_SENT THEN
+
+            rollback_For_Result();
 
             p_ret_code := RET_OK;
             p_ret_info := 'DOCUMENT_SUBMITTED SUCCESS accepted';
@@ -1477,33 +1367,33 @@ IS
             );
 
             RETURN;
+            
          END IF;
 
 
          IF l_status_cd = MI_Request_Api.STATUS_DONE THEN
-            rollback_For_Result;
+
+            rollback_For_Result();
 
             p_ret_code := RET_ALREADY_APPLIED;
             p_ret_info := 'Request already completed';
 
             RETURN;
+            
          END IF;
 
-         rollback_For_Result;
+         rollback_For_Result();
 
          p_ret_code := RET_BAD_STATE;
 
-         p_ret_info :=
-               'Request must be SENT for DOCUMENT_SUBMITTED SUCCESS, actual='
-            || MI_Request_Api.status_Name(l_status_cd);
+         p_ret_info := 'Request must be SENT for DOCUMENT_SUBMITTED SUCCESS, actual=' || MI_Request_Api.status_Name(l_status_cd);
 
          RETURN;
+         
       END IF;
 
 
-      ------------------------------------------------------------------------
       -- ERROR / VALIDATION_ERROR пока считаются terminal business outcome.
-      ------------------------------------------------------------------------
       apply_Terminal_Result(
          p_req_id        => p_req_id,
          p_itm_id        => p_itm_id,
@@ -1514,10 +1404,7 @@ IS
 
          p_ires_code     => MI_Item_Result_Api.RESPONSE_FAIL,
          p_error_code    => l_status,
-         p_info          =>
-            TO_CLOB(
-               'DOCUMENT_SUBMITTED status=' || l_status
-            ),
+         p_info          => TO_CLOB( 'DOCUMENT_SUBMITTED status=' || l_status ),
          p_response_time => p_response_time,
 
          p_ret_code      => p_ret_code,
@@ -1525,8 +1412,9 @@ IS
       );
 
 
-      IF p_ret_code IS NULL OR p_ret_code <> RET_OK THEN
-         rollback_For_Result;
+      IF p_ret_code IS NULL OR p_ret_code <> RET_OK 
+      THEN         
+         rollback_For_Result();
       ELSE
          l_log.info(
             p_message_text => 'DOCUMENT_SUBMITTED terminal result applied',
@@ -1543,22 +1431,15 @@ IS
          l_log.error(
             p_message_text => 'apply_Document_Submitted failed',
             p_action_code  => 'submitted',
-            p_details_text =>
-               TO_CLOB(
-                     SQLERRM
-                  || CHR(10)
-                  || DBMS_UTILITY.format_error_backtrace
-                  || CHR(10)
-                  || 'own_rollback='
-                  || MI_Utils.to_Char(l_rollback_ok)
-               )
+            p_details_text => TO_CLOB( SQLERRM || CHR(10) || DBMS_UTILITY.format_error_backtrace || CHR(10) || 'own_rollback=' || MI_Utils.to_Char(l_rollback_ok) )
          );
 
          RAISE;
+         
    END apply_Document_Submitted;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE apply_Document_Status (
       p_message_uuid   IN  MI_REQ.MESSAGE_UUID%TYPE,
       p_doc_key        IN  MI_0600.EXTERNAL_UUID%TYPE,
@@ -1595,12 +1476,12 @@ IS
          rollback_Or_Raise(
             p_name => l_savepoint,
             p_code => 'MI_0606_STATUS_ROLLBACK_FAILED',
-            p_info =>
-               'Не удалось завершить DOCUMENT_STATUS без изменений; '
-               || 'требуется полный rollback транзакции'
+            p_info => 'Не удалось завершить DOCUMENT_STATUS без изменений; требуется полный rollback транзакции'
          );
       END rollback_For_Result;
+      
    BEGIN
+   
       p_req_id   := NULL;
       p_itm_id   := NULL;
       p_ret_code := RET_FAIL;
@@ -1761,7 +1642,7 @@ IS
    END apply_Document_Status;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE apply_Fault (
       p_request_uuid   IN  MI_REQ.EXTERNAL_UUID%TYPE,
       p_message_uuid   IN  MI_REQ.MESSAGE_UUID%TYPE,
@@ -1929,15 +1810,7 @@ IS
          l_log.error(
             p_message_text => 'apply_Fault failed',
             p_action_code  => 'fault',
-            p_details_text =>
-               TO_CLOB(
-                     SQLERRM
-                  || CHR(10)
-                  || DBMS_UTILITY.format_error_backtrace
-                  || CHR(10)
-                  || 'own_rollback='
-                  || MI_Utils.to_Char(l_rollback_ok)
-               )
+            p_details_text => TO_CLOB( SQLERRM || CHR(10)  || DBMS_UTILITY.format_error_backtrace || CHR(10) || 'own_rollback=' || MI_Utils.to_Char(l_rollback_ok)  )
          );
 
          RAISE;
