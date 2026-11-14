@@ -14,12 +14,24 @@ DECLARE
    l_req_id2       MI_REQ.REQ_ID%TYPE;
    l_req_id3       MI_REQ.REQ_ID%TYPE;
    l_req_done_id   MI_REQ.REQ_ID%TYPE;
+   l_req_failure_id MI_REQ.REQ_ID%TYPE;
 
    l_status_cd     MI_REQ.STATUS_CD%TYPE;
    l_external_uuid MI_REQ.EXTERNAL_UUID%TYPE;
    l_corr_id       MI_REQ.CORRELATION_ID%TYPE;
    l_idsmr         MI_REQ.IDSMR%TYPE;
    l_note          MI_REQ.NOTE%TYPE;
+
+   l_failure_uuid     MI_REQ.EXTERNAL_UUID%TYPE;
+   l_message_uuid     MI_REQ.MESSAGE_UUID%TYPE;
+   l_other_message    MI_REQ.MESSAGE_UUID%TYPE;
+   l_result_code      MI_REQ.RESULT_CODE%TYPE;
+   l_result_info      MI_REQ.RESULT_INFO%TYPE;
+   l_result_time      MI_REQ.RESULT_TIME%TYPE;
+   l_occurred_at      MI_REQ.RESULT_TIME%TYPE;
+
+   l_ret_code       NUMBER;
+   l_ret_info       VARCHAR2(4000);
 
    l_log_wsp_id    MI_LOG.WSP_ID%TYPE;
    l_log_inf_id    MI_LOG.INF_ID%TYPE;
@@ -438,7 +450,209 @@ BEGIN
 
 
    ---------------------------------------------------------------------------
-   DBMS_OUTPUT.put_line('9. MI_Logger_T propagates request context');
+   DBMS_OUTPUT.put_line('9. apply_Request_Failure contract');
+
+   l_result := MI_Request_Api.create_Request(p_inf_id => l_inf_id);
+   assert_Success(l_result, 'failure callback request create failed');
+
+   l_req_failure_id := result_Req_Id(l_result);
+
+   l_result :=
+      MI_Request_Api.take_For_Proc(
+         p_req_id => l_req_failure_id,
+         p_info   => 'failure callback smoke'
+      );
+
+   assert_Success(l_result, 'failure callback take failed');
+
+   l_result := MI_Request_Api.to_Sent(l_req_failure_id);
+   assert_Success(l_result, 'failure callback to_Sent failed');
+
+   SELECT external_uuid
+     INTO l_failure_uuid
+     FROM MI_REQ
+    WHERE req_id = l_req_failure_id;
+
+   l_message_uuid  := MI_Utils.uuid_V7;
+   l_other_message := MI_Utils.uuid_V7;
+   l_occurred_at   := SYSTIMESTAMP;
+
+
+   /* Unsupported transport enum must not modify the SENT request. */
+   MI_Request_Api.apply_Request_Failure(
+      p_external_uuid => l_failure_uuid,
+      p_message_uuid  => l_message_uuid,
+      p_reason_code   => 'UNSUPPORTED_REASON',
+      p_error_code    => 'SMOKE_REJECTED',
+      p_error_info    => 'smoke transport rejection',
+      p_error_details => 'smoke failure details',
+      p_occurred_at   => l_occurred_at,
+      p_ret_code      => l_ret_code,
+      p_ret_info      => l_ret_info
+   );
+
+   assert_True(
+      l_ret_code = MI_Request_Api.RET_FAIL,
+      'unsupported reason was unexpectedly accepted'
+   );
+
+   assert_True(
+      INSTR(l_ret_info, 'REQUEST_FAILURE_INVALID_REASON') > 0,
+      'unsupported reason result code is missing'
+   );
+
+   assert_True(
+      MI_Request_Api.get_Status(l_req_failure_id) = MI_Request_Api.STATUS_SENT,
+      'invalid failure callback changed request status'
+   );
+
+
+   /* Lowercase input verifies normalization of the supported enum. */
+   MI_Request_Api.apply_Request_Failure(
+      p_external_uuid => l_failure_uuid,
+      p_message_uuid  => l_message_uuid,
+      p_reason_code   => 'request_rejected',
+      p_error_code    => 'SMOKE_REJECTED',
+      p_error_info    => 'smoke transport rejection',
+      p_error_details => 'smoke failure details',
+      p_occurred_at   => l_occurred_at,
+      p_ret_code      => l_ret_code,
+      p_ret_info      => l_ret_info
+   );
+
+   assert_True(
+      l_ret_code = MI_Request_Api.RET_OK,
+      'valid failure callback failed: ' || l_ret_info
+   );
+
+   assert_True(
+      INSTR(l_ret_info, 'REQUEST_FAILURE_APPLIED') > 0,
+      'applied result code is missing'
+   );
+
+   SELECT status_cd,
+          message_uuid,
+          result_code,
+          result_info,
+          note,
+          result_time
+     INTO l_status_cd,
+          l_external_uuid,
+          l_result_code,
+          l_result_info,
+          l_note,
+          l_result_time
+     FROM MI_REQ
+    WHERE req_id = l_req_failure_id;
+
+   assert_True(
+      l_status_cd = MI_Request_Api.STATUS_ERROR,
+      'failure callback did not set ERROR'
+   );
+
+   assert_Equals(
+      TRIM(l_external_uuid),
+      TRIM(l_message_uuid),
+      'failure callback MESSAGE_UUID mismatch'
+   );
+
+   assert_Equals(l_result_code, 'SMOKE_REJECTED', 'RESULT_CODE mismatch');
+   assert_Equals(l_result_info, 'smoke transport rejection', 'RESULT_INFO mismatch');
+   assert_Equals(l_note, 'smoke failure details', 'NOTE mismatch');
+
+   assert_True(
+      l_result_time = l_occurred_at,
+      'RESULT_TIME mismatch'
+   );
+
+
+   /* Same MESSAGE_UUID is an idempotent success and must not overwrite data. */
+   MI_Request_Api.apply_Request_Failure(
+      p_external_uuid => l_failure_uuid,
+      p_message_uuid  => l_message_uuid,
+      p_reason_code   => 'REQUEST_FAILED',
+      p_error_code    => 'SHOULD_NOT_REPLACE',
+      p_error_info    => 'SHOULD_NOT_REPLACE',
+      p_error_details => 'SHOULD_NOT_REPLACE',
+      p_occurred_at   => SYSTIMESTAMP,
+      p_ret_code      => l_ret_code,
+      p_ret_info      => l_ret_info
+   );
+
+   assert_True(
+      l_ret_code = MI_Request_Api.RET_OK,
+      'idempotent failure callback failed: ' || l_ret_info
+   );
+
+   assert_True(
+      INSTR(l_ret_info, 'REQUEST_FAILURE_ALREADY_APPLIED') > 0,
+      'idempotent result code is missing'
+   );
+
+   SELECT result_code,
+          result_info,
+          note,
+          result_time
+     INTO l_result_code,
+          l_result_info,
+          l_note,
+          l_result_time
+     FROM MI_REQ
+    WHERE req_id = l_req_failure_id;
+
+   assert_Equals(
+      l_result_code,
+      'SMOKE_REJECTED',
+      'idempotent callback overwrote RESULT_CODE'
+   );
+
+   assert_Equals(
+      l_result_info,
+      'smoke transport rejection',
+      'idempotent callback overwrote RESULT_INFO'
+   );
+
+   assert_Equals(
+      l_note,
+      'smoke failure details',
+      'idempotent callback overwrote NOTE'
+   );
+
+   assert_True(
+      l_result_time = l_occurred_at,
+      'idempotent callback overwrote RESULT_TIME'
+   );
+
+
+   /* Different MESSAGE_UUID for terminal ERROR is a conflict. */
+   MI_Request_Api.apply_Request_Failure(
+      p_external_uuid => l_failure_uuid,
+      p_message_uuid  => l_other_message,
+      p_reason_code   => 'REQUEST_FAILED',
+      p_error_code    => 'OTHER_MESSAGE',
+      p_error_info    => 'other message',
+      p_error_details => 'other message',
+      p_occurred_at   => SYSTIMESTAMP,
+      p_ret_code      => l_ret_code,
+      p_ret_info      => l_ret_info
+   );
+
+   assert_True(
+      l_ret_code = MI_Request_Api.RET_FAIL,
+      'different terminal MESSAGE_UUID was unexpectedly accepted'
+   );
+
+   assert_True(
+      INSTR(l_ret_info, 'REQUEST_FAILURE_CONFLICT') > 0,
+      'conflict result code is missing'
+   );
+
+   DBMS_OUTPUT.put_line('   req_id=' || l_req_failure_id);
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('10. MI_Logger_T propagates request context');
 
    SELECT COUNT(*)
      INTO l_count
@@ -478,11 +692,25 @@ BEGIN
       'log CORRELATION_ID mismatch'
    );
 
+   SELECT COUNT(*)
+     INTO l_count
+     FROM MI_LOG
+    WHERE LOGGER_NAME = 'mi.request'
+      AND REQ_ID      = l_req_failure_id
+      AND INF_ID      = l_inf_id
+      AND ACTION_CODE = 'apply_failure'
+      AND MESSAGE_TEXT = 'Request failure applied';
+
+   assert_True(
+      l_count = 1,
+      'apply_Request_Failure log context mismatch'
+   );
+
    DBMS_OUTPUT.put_line('   OK');
 
 
    ---------------------------------------------------------------------------
-   DBMS_OUTPUT.put_line('10. API does not commit caller transaction');
+   DBMS_OUTPUT.put_line('11. API does not commit caller transaction');
 
    ROLLBACK TO before_request_smoke;
 
@@ -493,7 +721,8 @@ BEGIN
        l_req_id,
        l_req_id2,
        l_req_id3,
-       l_req_done_id
+       l_req_done_id,
+       l_req_failure_id
     );
 
    assert_True(

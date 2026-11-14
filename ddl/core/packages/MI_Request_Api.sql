@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_Request_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.0.0} {08.11.2026} Sulimoff$';
+      '$Id: {1.1.0} {15.11.2026} Sulimoff$';
 
 
    SUBTYPE Status_t IS PLS_INTEGER RANGE -1 .. 3;
@@ -12,6 +12,11 @@ IS
    STATUS_DONE  CONSTANT Status_t :=  1;
    STATUS_BUSY  CONSTANT Status_t :=  2;
    STATUS_SENT  CONSTANT Status_t :=  3;
+
+
+   /* JDBC compatibility result for transport callbacks. */
+   RET_FAIL CONSTANT PLS_INTEGER := -1;
+   RET_OK   CONSTANT PLS_INTEGER :=  0;
 
 
    FUNCTION get_Version
@@ -126,6 +131,35 @@ IS
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
       RETURN MI_ResultCtx.exec_Result_t;
+
+
+   /*
+      Применяет отрицательный transport response к исходящему request.
+
+      Поддерживаемые причины: REQUEST_REJECTED, REQUEST_FAILED.
+      Результат применим только к request в статусе SENT.
+
+      Повтор с тем же MESSAGE_UUID идемпотентен. Другой MESSAGE_UUID для уже
+      завершённого ERROR request считается конфликтом и данные не изменяет.
+
+      Процедура предназначена для вызова через JDBC. COMMIT не выполняется.
+      Транзакцией управляет вызывающая сторона. Локальный rollback выполняется
+      только через DCL.SavePoint/RollBack.
+   */
+   PROCEDURE apply_Request_Failure (
+      p_external_uuid  IN MI_REQ.EXTERNAL_UUID%TYPE,
+      p_message_uuid   IN MI_REQ.MESSAGE_UUID%TYPE,
+
+      p_reason_code    IN VARCHAR2,
+
+      p_error_code     IN MI_REQ.RESULT_CODE%TYPE,
+      p_error_info     IN MI_REQ.RESULT_INFO%TYPE,
+      p_error_details  IN MI_REQ.NOTE%TYPE,
+      p_occurred_at    IN MI_REQ.RESULT_TIME%TYPE,
+
+      p_ret_code       OUT NUMBER,
+      p_ret_info       OUT VARCHAR2
+   );
 
 
    /*
@@ -302,7 +336,8 @@ IS
       p_info      IN VARCHAR2,
       p_req_id    IN MI_REQ.REQ_ID%TYPE DEFAULT NULL,
       p_inf_id    IN MI_REQ.INF_ID%TYPE DEFAULT NULL,
-      p_status_cd IN Status_t            DEFAULT NULL
+      p_status_cd IN Status_t            DEFAULT NULL,
+      p_ret_code  IN PLS_INTEGER         DEFAULT NULL
    )
       RETURN MI_ResultCtx.exec_Result_t
    IS
@@ -326,6 +361,10 @@ IS
          l_result.parameters('status_cd') := TO_CHAR(p_status_cd);
       END IF;
 
+      IF p_ret_code IS NOT NULL THEN
+         l_result.parameters('ret_code') := TO_CHAR(p_ret_code);
+      END IF;
+
       RETURN l_result;
    END success_Result;
 
@@ -337,7 +376,8 @@ IS
       p_req_id        IN MI_REQ.REQ_ID%TYPE DEFAULT NULL,
       p_inf_id        IN MI_REQ.INF_ID%TYPE DEFAULT NULL,
       p_status_cd     IN Status_t            DEFAULT NULL,
-      p_details       IN CLOB                DEFAULT NULL
+      p_details       IN CLOB                DEFAULT NULL,
+      p_ret_code      IN PLS_INTEGER         DEFAULT NULL
    )
       RETURN MI_ResultCtx.exec_Result_t
    IS
@@ -360,6 +400,10 @@ IS
 
       IF p_status_cd IS NOT NULL THEN
          l_result.parameters('status_cd') := TO_CHAR(p_status_cd);
+      END IF;
+
+      IF p_ret_code IS NOT NULL THEN
+         l_result.parameters('ret_code') := TO_CHAR(p_ret_code);
       END IF;
 
       RETURN l_result;
@@ -888,6 +932,479 @@ IS
                p_info    => 'Ошибка перевода request в ERROR'
             );
    END to_Error;
+
+
+   ---------------------------------------------------------------------------
+   FUNCTION rollback_Savepoint (
+      p_name IN OUT DCL.T_Name
+   )
+      RETURN BOOLEAN
+   IS
+      l_name    DCL.T_Name;
+      l_result  BOOLEAN;
+   BEGIN
+      IF p_name IS NULL THEN
+         RETURN TRUE;
+      END IF;
+
+      /*
+         Clear first so an error in DCL cannot cause a second rollback attempt
+         from the enclosing exception handler.
+      */
+      l_name := p_name;
+      p_name := NULL;
+
+      l_result := DCL.RollBack(l_name);
+
+      RETURN l_result IS NOT NULL AND l_result;
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         g_log.error(
+            p_message_text => 'DCL rollback failed',
+            p_action_code  => 'rollback',
+            p_details_text =>
+               TO_CLOB(
+                     'savepoint='
+                  || l_name
+                  || '; error='
+                  || SQLERRM
+               )
+         );
+
+         RETURN FALSE;
+   END rollback_Savepoint;
+
+
+   ---------------------------------------------------------------------------
+   FUNCTION apply_Request_Failure_Impl (
+      p_external_uuid  IN MI_REQ.EXTERNAL_UUID%TYPE,
+      p_message_uuid   IN MI_REQ.MESSAGE_UUID%TYPE,
+
+      p_reason_code    IN VARCHAR2,
+
+      p_error_code     IN MI_REQ.RESULT_CODE%TYPE,
+      p_error_info     IN MI_REQ.RESULT_INFO%TYPE,
+      p_error_details  IN MI_REQ.NOTE%TYPE,
+      p_occurred_at    IN MI_REQ.RESULT_TIME%TYPE
+   )
+      RETURN MI_ResultCtx.exec_Result_t
+   IS
+      l_req_id                MI_REQ.REQ_ID%TYPE;
+      l_inf_id                MI_REQ.INF_ID%TYPE;
+      l_status_cd             MI_REQ.STATUS_CD%TYPE;
+      l_current_message_uuid  MI_REQ.MESSAGE_UUID%TYPE;
+      l_correlation_id        MI_REQ.CORRELATION_ID%TYPE;
+
+      l_reason_code           VARCHAR2(32767);
+      l_savepoint_name        DCL.T_Name;
+      l_row_count             PLS_INTEGER;
+
+      l_result                MI_ResultCtx.exec_Result_t;
+      l_sqlcode               PLS_INTEGER;
+      l_sqlerrm               VARCHAR2(2000);
+      l_rollback_ok           BOOLEAN;
+
+      l_log                   MI_Logger_T := g_log;
+
+
+      ------------------------------------------------------------------------
+      PROCEDURE rollback_For_Result
+      IS
+      BEGIN
+         IF NOT rollback_Savepoint(l_savepoint_name) THEN
+            MI_ResultCtx.raise_Error(
+               p_code => 'REQUEST_FAILURE_ROLLBACK_FAILED',
+               p_info =>
+                  'Не удалось завершить обработку без изменений; '
+                  || 'требуется полный rollback транзакции'
+            );
+         END IF;
+      END rollback_For_Result;
+
+
+      ------------------------------------------------------------------------
+      PROCEDURE add_Transport_Context (
+         p_value IN OUT NOCOPY MI_ResultCtx.exec_Result_t
+      )
+      IS
+      BEGIN
+         p_value.parameters('ret_code') := TO_CHAR(RET_FAIL);
+
+         IF p_external_uuid IS NOT NULL THEN
+            p_value.parameters('external_uuid') := TRIM(p_external_uuid);
+         END IF;
+
+         IF p_message_uuid IS NOT NULL THEN
+            p_value.parameters('message_uuid') := TRIM(p_message_uuid);
+         END IF;
+
+         IF l_reason_code IS NOT NULL THEN
+            p_value.parameters('reason_code') := l_reason_code;
+         END IF;
+
+         IF l_req_id IS NOT NULL THEN
+            p_value.parameters('req_id') := TO_CHAR(l_req_id);
+         END IF;
+
+         IF l_inf_id IS NOT NULL THEN
+            p_value.parameters('inf_id') := TO_CHAR(l_inf_id);
+         END IF;
+
+         IF l_status_cd IS NOT NULL THEN
+            p_value.parameters('status_cd') := TO_CHAR(l_status_cd);
+         END IF;
+      END add_Transport_Context;
+
+
+   BEGIN
+      ------------------------------------------------------------------------
+      -- Validate the transport envelope before locks and DML.
+      ------------------------------------------------------------------------
+      IF p_external_uuid IS NULL
+         OR NOT MI_Utils.is_Uuid(TRIM(p_external_uuid))
+      THEN
+         RETURN
+            failure_Result(
+               p_code     => 'REQUEST_FAILURE_INVALID_REQUEST_UUID',
+               p_info     => 'p_external_uuid must be a valid UUID',
+               p_ret_code => RET_FAIL
+            );
+      END IF;
+
+      IF p_message_uuid IS NULL
+         OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
+      THEN
+         RETURN
+            failure_Result(
+               p_code     => 'REQUEST_FAILURE_INVALID_MESSAGE_UUID',
+               p_info     => 'p_message_uuid must be a valid UUID',
+               p_ret_code => RET_FAIL
+            );
+      END IF;
+
+      l_reason_code := UPPER(TRIM(p_reason_code));
+
+      IF l_reason_code IS NULL
+         OR l_reason_code NOT IN ('REQUEST_REJECTED', 'REQUEST_FAILED')
+      THEN
+         RETURN
+            failure_Result(
+               p_code     => 'REQUEST_FAILURE_INVALID_REASON',
+               p_info     =>
+                  'Unsupported p_reason_code: '
+                  || NVL(l_reason_code, '<NULL>'),
+               p_ret_code => RET_FAIL
+            );
+      END IF;
+
+
+      g_log.enter_f(
+         p_function_name => 'apply_Request_Failure',
+         p_message_text  =>
+               'external_uuid='
+            || TRIM(p_external_uuid)
+            || ', reason_code='
+            || l_reason_code
+      );
+
+
+      DCL.SavePoint(l_savepoint_name);
+
+      IF l_savepoint_name IS NULL THEN
+         RETURN
+            failure_Result(
+               p_code     => 'REQUEST_FAILURE_SAVEPOINT_UNAVAILABLE',
+               p_info     => 'DCL did not create the operation savepoint',
+               p_ret_code => RET_FAIL
+            );
+      END IF;
+
+
+      /*
+         MI_REQ is the aggregate root. The row is locked before inspecting
+         status and idempotency state, so concurrent callbacks are serialized.
+      */
+      BEGIN
+         SELECT REQ_ID,
+                INF_ID,
+                STATUS_CD,
+                MESSAGE_UUID,
+                CORRELATION_ID
+           INTO l_req_id,
+                l_inf_id,
+                l_status_cd,
+                l_current_message_uuid,
+                l_correlation_id
+           FROM MI_REQ
+          WHERE EXTERNAL_UUID = TRIM(p_external_uuid)
+            FOR UPDATE;
+
+      EXCEPTION
+         WHEN NO_DATA_FOUND THEN
+            rollback_For_Result;
+
+            RETURN
+               failure_Result(
+                  p_code     => 'REQUEST_FAILURE_NOT_FOUND',
+                  p_info     =>
+                     'Не найден request с external_uuid='
+                     || TRIM(p_external_uuid),
+                  p_ret_code => RET_FAIL
+               );
+      END;
+
+
+      l_log.context(
+         p_inf_id         => l_inf_id,
+         p_req_id         => l_req_id,
+         p_correlation_id => l_correlation_id
+      );
+
+
+      IF l_status_cd = STATUS_ERROR THEN
+         IF TRIM(l_current_message_uuid) = TRIM(p_message_uuid) THEN
+            rollback_For_Result;
+
+            l_log.info(
+               p_message_text => 'Request failure already applied',
+               p_action_code  => 'failure_idempotent',
+               p_details_text => TO_CLOB('message_uuid=' || TRIM(p_message_uuid))
+            );
+
+            l_result :=
+               success_Result(
+                  p_code      => 'REQUEST_FAILURE_ALREADY_APPLIED',
+                  p_info      => 'Отрицательный ответ уже применён ранее',
+                  p_req_id    => l_req_id,
+                  p_inf_id    => l_inf_id,
+                  p_status_cd => STATUS_ERROR,
+                  p_ret_code  => RET_OK
+               );
+
+            l_result.parameters('idempotent')  := 'true';
+            l_result.parameters('reason_code') := l_reason_code;
+            l_result.parameters('message_uuid') := TRIM(p_message_uuid);
+
+            RETURN l_result;
+         END IF;
+
+         rollback_For_Result;
+
+         RETURN
+            failure_Result(
+               p_code      => 'REQUEST_FAILURE_CONFLICT',
+               p_info      =>
+                    'Request уже установлен в ERROR другим сообщением: '
+                 || 'current_message_uuid='
+                 || NVL(TRIM(l_current_message_uuid), '<NULL>')
+                 || ', incoming_message_uuid='
+                 || TRIM(p_message_uuid),
+               p_req_id    => l_req_id,
+               p_inf_id    => l_inf_id,
+               p_status_cd => l_status_cd,
+               p_ret_code  => RET_FAIL
+            );
+      END IF;
+
+
+      IF l_status_cd <> STATUS_SENT THEN
+         rollback_For_Result;
+
+         RETURN
+            failure_Result(
+               p_code      => 'REQUEST_FAILURE_BAD_STATUS',
+               p_info      =>
+                    'Request должен находиться в SENT; current_status='
+                 || status_Name(l_status_cd)
+                 || ' ('
+                 || NVL(TO_CHAR(l_status_cd), '<NULL>')
+                 || ')',
+               p_req_id    => l_req_id,
+               p_inf_id    => l_inf_id,
+               p_status_cd => l_status_cd,
+               p_ret_code  => RET_FAIL
+            );
+      END IF;
+
+
+      UPDATE MI_REQ
+         SET STATUS_CD    = STATUS_ERROR,
+             RESULT_CODE  = p_error_code,
+             RESULT_INFO  = p_error_info,
+             NOTE         = p_error_details,
+             RESULT_TIME  = p_occurred_at,
+             MESSAGE_UUID = TRIM(p_message_uuid)
+       WHERE REQ_ID = l_req_id
+         AND STATUS_CD = STATUS_SENT;
+
+      l_row_count := SQL%ROWCOUNT;
+
+      IF l_row_count <> 1 THEN
+         rollback_For_Result;
+
+         RETURN
+            failure_Result(
+               p_code      => 'REQUEST_FAILURE_UPDATE_FAILED',
+               p_info      =>
+                  'Отрицательный ответ не применён, row_count='
+                  || l_row_count,
+               p_req_id    => l_req_id,
+               p_inf_id    => l_inf_id,
+               p_status_cd => l_status_cd,
+               p_ret_code  => RET_FAIL
+            );
+      END IF;
+
+
+      l_status_cd := STATUS_ERROR;
+
+      l_log.info(
+         p_message_text => 'Request failure applied',
+         p_action_code  => 'apply_failure',
+         p_details_text =>
+            TO_CLOB(
+                  'reason_code='
+               || l_reason_code
+               || ', error_code='
+               || NVL(p_error_code, '<NULL>')
+               || ', message_uuid='
+               || TRIM(p_message_uuid)
+            )
+      );
+
+      l_log.exit_f(
+         p_function_name => 'apply_Request_Failure',
+         p_message_text  => 'OK'
+      );
+
+
+      l_result :=
+         success_Result(
+            p_code      => 'REQUEST_FAILURE_APPLIED',
+            p_info      => 'Отрицательный ответ успешно применён',
+            p_req_id    => l_req_id,
+            p_inf_id    => l_inf_id,
+            p_status_cd => STATUS_ERROR,
+            p_ret_code  => RET_OK
+         );
+
+      l_result.parameters('idempotent')   := 'false';
+      l_result.parameters('reason_code')  := l_reason_code;
+      l_result.parameters('message_uuid') := TRIM(p_message_uuid);
+
+      RETURN l_result;
+
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         l_sqlcode     := SQLCODE;
+         l_sqlerrm     := SQLERRM;
+         l_rollback_ok := rollback_Savepoint(l_savepoint_name);
+
+         l_log.error(
+            p_message_text => 'apply_Request_Failure failed',
+            p_action_code  => 'apply_failure',
+            p_details_text =>
+               TO_CLOB(
+                     l_sqlerrm
+                  || CHR(10)
+                  || DBMS_UTILITY.format_error_backtrace
+                  || CHR(10)
+                  || 'own_rollback='
+                  || MI_Utils.to_Char(l_rollback_ok)
+               )
+         );
+
+         l_result :=
+            MI_ResultCtx.from_Exception(
+               p_sqlcode => l_sqlcode,
+               p_sqlerrm => l_sqlerrm,
+               p_code    => 'REQUEST_FAILURE_APPLY_FAILED',
+               p_info    => 'Не удалось применить отрицательный ответ'
+            );
+
+         add_Transport_Context(l_result);
+
+         IF NOT l_rollback_ok THEN
+            l_result :=
+               MI_ResultCtx.wrap_Exception(
+                  p_cause => l_result,
+                  p_code  => 'REQUEST_FAILURE_ROLLBACK_FAILED',
+                  p_info  =>
+                     'Не удалось откатить собственную работу; '
+                     || 'требуется полный rollback транзакции'
+               );
+
+            MI_ResultCtx.raise_Error(l_result);
+         END IF;
+
+         RETURN l_result;
+   END apply_Request_Failure_Impl;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE apply_Request_Failure (
+      p_external_uuid  IN MI_REQ.EXTERNAL_UUID%TYPE,
+      p_message_uuid   IN MI_REQ.MESSAGE_UUID%TYPE,
+
+      p_reason_code    IN VARCHAR2,
+
+      p_error_code     IN MI_REQ.RESULT_CODE%TYPE,
+      p_error_info     IN MI_REQ.RESULT_INFO%TYPE,
+      p_error_details  IN MI_REQ.NOTE%TYPE,
+      p_occurred_at    IN MI_REQ.RESULT_TIME%TYPE,
+
+      p_ret_code       OUT NUMBER,
+      p_ret_info       OUT VARCHAR2
+   )
+   IS
+      l_result MI_ResultCtx.exec_Result_t;
+   BEGIN
+      p_ret_code := RET_FAIL;
+      p_ret_info := NULL;
+
+      l_result :=
+         apply_Request_Failure_Impl(
+            p_external_uuid => p_external_uuid,
+            p_message_uuid  => p_message_uuid,
+            p_reason_code   => p_reason_code,
+            p_error_code    => p_error_code,
+            p_error_info    => p_error_info,
+            p_error_details => p_error_details,
+            p_occurred_at   => p_occurred_at
+         );
+
+      BEGIN
+         p_ret_code := TO_NUMBER(l_result.parameters('ret_code'));
+      EXCEPTION
+         WHEN NO_DATA_FOUND OR VALUE_ERROR THEN
+            IF MI_ResultCtx.is_Success(l_result) THEN
+               p_ret_code := RET_OK;
+            ELSE
+               p_ret_code := RET_FAIL;
+            END IF;
+      END;
+
+      p_ret_info :=
+         SUBSTR(
+               NVL(l_result.result_code, '<NO_RESULT_CODE>')
+            || ': '
+            || NVL(l_result.result_info, '<NO_RESULT_INFO>')
+            || CASE
+                  WHEN l_result.cause_code IS NOT NULL
+                     OR l_result.cause_info IS NOT NULL
+                  THEN
+                        '; cause='
+                     || NVL(l_result.cause_code, '<NO_CAUSE_CODE>')
+                     || ': '
+                     || NVL(l_result.cause_info, '<NO_CAUSE_INFO>')
+                  ELSE NULL
+               END,
+            1,
+            4000
+         );
+   END apply_Request_Failure;
 
 
    ---------------------------------------------------------------------------
