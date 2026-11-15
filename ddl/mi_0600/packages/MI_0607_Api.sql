@@ -4,7 +4,7 @@ IS
    /* MI-edo. DOCUMENT_RECEIVED вида сведений 607 */
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.1.1} {15.11.2026} Sulimoff$';
+      '$Id: {1.1.2} {15.11.2026} Sulimoff$';
 
 
    RET_FAIL               CONSTANT PLS_INTEGER := -1;
@@ -369,36 +369,6 @@ IS
       END rollback_Savepoint;
 
 
-      FUNCTION rollback_Own_Work
-         RETURN BOOLEAN
-      IS
-         l_result BOOLEAN;
-      BEGIN
-         l_result := rollback_Savepoint(l_own_savepoint);
-
-         /*
-            После rollback до внешнего savepoint внутренний savepoint
-            гарантированно больше использовать нельзя.
-         */
-         l_business_savepoint := NULL;
-
-         RETURN l_result IS NOT NULL AND l_result;
-      END rollback_Own_Work;
-
-
-      PROCEDURE rollback_Business_Work
-      IS
-      BEGIN
-         IF NOT rollback_Savepoint(l_business_savepoint) THEN
-            raise_Technical_Error(
-               p_code => 'MI_0607_BUSINESS_ROLLBACK_FAILED',
-               p_info =>
-                  'Не удалось откатить изменения RSD; требуется полный rollback транзакции'
-            );
-         END IF;
-      END rollback_Business_Work;
-
-
       PROCEDURE return_Existing
       IS
       BEGIN
@@ -460,7 +430,14 @@ IS
       )
       IS
       BEGIN
-         rollback_Business_Work;
+         IF NOT rollback_Savepoint(l_business_savepoint) THEN
+            raise_Technical_Error(
+               p_code => 'MI_0607_BUSINESS_ROLLBACK_FAILED',
+               p_info =>
+                  'Не удалось откатить изменения RSD; '
+                  || 'требуется полный rollback транзакции'
+            );
+         END IF;
 
          set_Item_Result(
             p_itm_id     => l_itm_id,
@@ -629,13 +606,6 @@ IS
 
       DCL.SavePoint(l_own_savepoint);
 
-      IF l_own_savepoint IS NULL THEN
-         raise_Technical_Error(
-            p_code => 'MI_0607_SAVEPOINT_UNAVAILABLE',
-            p_info => 'DCL did not create the operation savepoint'
-         );
-      END IF;
-
 
       -- 1. MI_REQ: durable integration journal header.
       l_request_result :=
@@ -663,7 +633,8 @@ IS
             Roll back our attempt and recheck the durable 607 journal before
             classifying the result as a technical request-header failure.
          */
-         l_rollback_ok := rollback_Own_Work();
+         l_rollback_ok := rollback_Savepoint(l_own_savepoint);
+         l_business_savepoint := NULL;
 
          IF NOT l_rollback_ok THEN
             raise_Technical_Error(
@@ -787,13 +758,6 @@ IS
       -- Business failure must not remove MI_REQ / MI_0600.
       ------------------------------------------------------------------------
       DCL.SavePoint(l_business_savepoint);
-
-      IF l_business_savepoint IS NULL THEN
-         raise_Technical_Error(
-            p_code => 'MI_0607_BUSINESS_SAVEPOINT_UNAVAILABLE',
-            p_info => 'DCL did not create the RSD business savepoint'
-         );
-      END IF;
 
 
       -- 3. Business module: create RSD_BASES.
@@ -948,7 +912,8 @@ IS
       WHEN DUP_VAL_ON_INDEX THEN
       
          l_sqlerrm     := SQLERRM;
-         l_rollback_ok := rollback_Own_Work();
+         l_rollback_ok := rollback_Savepoint(l_own_savepoint);
+         l_business_savepoint := NULL;
 
          IF NOT l_rollback_ok THEN
             raise_Technical_Error(
@@ -997,7 +962,8 @@ IS
       ------------------------------------------------------------------------
       WHEN OTHERS THEN
          l_sqlerrm     := SQLERRM;
-         l_rollback_ok := rollback_Own_Work();
+         l_rollback_ok := rollback_Savepoint(l_own_savepoint);
+         l_business_savepoint := NULL;
 
          l_log.error(
             p_message_text => 'process_Document_Received failed',
