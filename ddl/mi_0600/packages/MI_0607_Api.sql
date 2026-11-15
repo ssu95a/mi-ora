@@ -4,7 +4,7 @@ IS
    /* MI-edo. DOCUMENT_RECEIVED вида сведений 607 */
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.1.2} {15.11.2026} Sulimoff$';
+      '$Id: {1.2.0} {15.11.2026} Sulimoff$';
 
 
    RET_FAIL               CONSTANT PLS_INTEGER := -1;
@@ -15,7 +15,8 @@ IS
    RET_PARSING_FAILED     CONSTANT PLS_INTEGER :=  3;
 
    /*
-      Идемпотентный повтор уже завершённого DOCUMENT_RECEIVED.
+      Идемпотентный повтор успешно завершённого DOCUMENT_RECEIVED.
+      Повтор с сохранённым business failure возвращает исходный RET_*.
       Неполный или противоречивый journal является technical failure.
    */
    RET_EXISTS             CONSTANT PLS_INTEGER :=  4;
@@ -157,60 +158,167 @@ IS
    END set_Item_Result;
 
 
+   /* NULL-safe UUID comparison for replay identity checks. */
+   FUNCTION same_Uuid (
+      p_left  IN VARCHAR2,
+      p_right IN VARCHAR2
+   )
+      RETURN BOOLEAN
+   IS
+   BEGIN
+      IF p_left IS NULL THEN
+         RETURN p_right IS NULL;
+      END IF;
+
+      IF p_right IS NULL THEN
+         RETURN FALSE;
+      END IF;
+
+      RETURN LOWER(TRIM(p_left)) = LOWER(TRIM(p_right));
+   END same_Uuid;
+
+
+   /* Maps a terminal journal to the public Java-facing return contract. */
+   FUNCTION replay_Return_Code (
+      p_ires_code  IN MI_0600.IRES_CODE%TYPE,
+      p_error_code IN MI_0600.ERROR_CODE%TYPE
+   )
+      RETURN PLS_INTEGER
+   IS
+   BEGIN
+      IF p_ires_code = MI_Item_Result_Api.RESPONSE_OK THEN
+         RETURN RET_EXISTS;
+      END IF;
+
+      IF p_ires_code = MI_Item_Result_Api.RESPONSE_FAIL THEN
+         CASE UPPER(TRIM(p_error_code))
+            WHEN 'CREATE_BASE_FAILED' THEN
+               RETURN RET_CREATE_BASE_FAILED;
+            WHEN 'DOC_TYPE_MISMATCH' THEN
+               RETURN RET_DOC_TYPE_MISMATCH;
+            WHEN 'PARSING_FAILED' THEN
+               RETURN RET_PARSING_FAILED;
+            ELSE
+               raise_Technical_Error(
+                  p_code => 'MI_0607_INCONSISTENT_JOURNAL',
+                  p_info =>
+                        'Unknown terminal DOCUMENT_RECEIVED error_code='
+                     || NVL(p_error_code, '<NULL>')
+               );
+         END CASE;
+      END IF;
+
+      raise_Technical_Error(
+         p_code => 'MI_0607_INCONSISTENT_JOURNAL',
+         p_info =>
+               'Unexpected terminal DOCUMENT_RECEIVED ires_code='
+            || NVL(TO_CHAR(p_ires_code), '<NULL>')
+      );
+
+      RETURN RET_FAIL;
+   END replay_Return_Code;
+
+
+   /* A completed journal with different input is not an idempotent replay. */
+   PROCEDURE raise_Replay_Conflict (
+      p_req_id IN MI_REQ.REQ_ID%TYPE,
+      p_itm_id IN MI_0600.ITM_ID%TYPE,
+      p_field  IN VARCHAR2
+   )
+   IS
+   BEGIN
+      raise_Technical_Error(
+         p_code => 'MI_0607_REPLAY_CONFLICT',
+         p_info =>
+               'DOCUMENT_RECEIVED replay differs from stored journal'
+            || '; field='
+            || p_field
+            || '; req_id='
+            || p_req_id
+            || '; itm_id='
+            || p_itm_id
+      );
+   END raise_Replay_Conflict;
+
+
    /* */
    FUNCTION find_Existing (
-      p_journal_name  IN  MI_0600.CZIP_NAME%TYPE,
+      p_journal_name          IN  MI_0600.CZIP_NAME%TYPE,
+      p_task_id               IN  MI_REQ.CTAXREQ_ID%TYPE,
+      p_original_req_uuid     IN  MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_input_correlation_id  IN  MI_REQ.CORRELATION_ID%TYPE,
+      p_file_name             IN  MI_0600_F.CZIP_FILE_NAME%TYPE,
+      p_file_body             IN  MI_0600.BZIP_DATA%TYPE,
 
-      p_req_id         OUT MI_REQ.REQ_ID%TYPE,
-      p_itm_id         OUT MI_0600.ITM_ID%TYPE,
-      p_ires_code      OUT MI_0600.IRES_CODE%TYPE,
-      p_error_code     OUT MI_0600.ERROR_CODE%TYPE,
-      p_correlation_id OUT MI_REQ.CORRELATION_ID%TYPE
+      p_req_id                OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id                OUT MI_0600.ITM_ID%TYPE,
+      p_ires_code             OUT MI_0600.IRES_CODE%TYPE,
+      p_error_code            OUT MI_0600.ERROR_CODE%TYPE,
+      p_cres_info             OUT MI_0600.CRES_INFO%TYPE,
+      p_stored_correlation_id OUT MI_REQ.CORRELATION_ID%TYPE
    )
       RETURN BOOLEAN
    IS
       l_status_cd             MI_REQ.STATUS_CD%TYPE;
       l_request_message_uuid  MI_REQ.MESSAGE_UUID%TYPE;
       l_item_message_uuid     MI_0600.MESSAGE_UUID%TYPE;
+      l_stored_task_id        MI_REQ.CTAXREQ_ID%TYPE;
+      l_stored_original_uuid  MI_REQ.ORIGINAL_REQ_UUID%TYPE;
+      l_stored_file_name      MI_0600_F.CZIP_FILE_NAME%TYPE;
+      l_stored_file_body      MI_0600.BZIP_DATA%TYPE;
       l_payload_size          MI_0600.IZIP_SIZE%TYPE;
       l_file_count            PLS_INTEGER;
       l_item_file_count       MI_0600.IZIP_FILES_COUNT%TYPE;
+      l_tres_time             MI_0600.TRES_TIME%TYPE;
+      l_payload_compare       PLS_INTEGER;
    BEGIN
-      p_req_id         := NULL;
-      p_itm_id         := NULL;
-      p_ires_code      := NULL;
-      p_error_code     := NULL;
-      p_correlation_id := NULL;
+      p_req_id                := NULL;
+      p_itm_id                := NULL;
+      p_ires_code             := NULL;
+      p_error_code            := NULL;
+      p_cres_info             := NULL;
+      p_stored_correlation_id := NULL;
 
       SELECT r.REQ_ID,
              i.ITM_ID,
              i.IRES_CODE,
              i.ERROR_CODE,
+             i.CRES_INFO,
              r.CORRELATION_ID,
              r.STATUS_CD,
              r.MESSAGE_UUID,
              i.MESSAGE_UUID,
+             r.CTAXREQ_ID,
+             r.ORIGINAL_REQ_UUID,
+             i.BZIP_DATA,
              DBMS_LOB.getlength(i.BZIP_DATA),
-             i.IZIP_FILES_COUNT
+             i.IZIP_FILES_COUNT,
+             i.TRES_TIME
         INTO p_req_id,
              p_itm_id,
              p_ires_code,
              p_error_code,
-             p_correlation_id,
+             p_cres_info,
+             p_stored_correlation_id,
              l_status_cd,
              l_request_message_uuid,
              l_item_message_uuid,
+             l_stored_task_id,
+             l_stored_original_uuid,
+             l_stored_file_body,
              l_payload_size,
-             l_item_file_count
+             l_item_file_count,
+             l_tres_time
         FROM MI_REQ r
         JOIN MI_0600 i
           ON i.REQ_ID = r.REQ_ID
        WHERE r.INF_ID = cInfId
          AND i.CZIP_NAME = p_journal_name;
 
-
-      SELECT COUNT(*)
-        INTO l_file_count
+      SELECT COUNT(*),
+             MIN(CZIP_FILE_NAME)
+        INTO l_file_count,
+             l_stored_file_name
         FROM MI_0600_F
        WHERE ITM_ID = p_itm_id;
 
@@ -232,6 +340,7 @@ IS
          OR l_item_file_count IS NULL
          OR l_item_file_count <> 1
          OR l_file_count <> 1
+         OR l_tres_time IS NULL
          OR p_ires_code IS NULL
          OR p_ires_code NOT IN (
                MI_Item_Result_Api.RESPONSE_OK,
@@ -258,15 +367,55 @@ IS
       END IF;
 
 
+      /*
+         message_uuid is the idempotency key, not permission to accept a
+         different message under the same key.  A NULL input correlation_id
+         is intentionally compatible with the generated stored value.
+      */
+      IF NOT same_Uuid(l_stored_task_id, p_task_id) THEN
+         raise_Replay_Conflict(p_req_id, p_itm_id, 'taskId');
+      END IF;
+
+      IF NOT same_Uuid(l_stored_original_uuid, p_original_req_uuid) THEN
+         raise_Replay_Conflict(
+            p_req_id,
+            p_itm_id,
+            'originalRequestUuid'
+         );
+      END IF;
+
+      IF p_input_correlation_id IS NOT NULL
+         AND NOT same_Uuid(
+                    p_stored_correlation_id,
+                    p_input_correlation_id
+                 )
+      THEN
+         raise_Replay_Conflict(p_req_id, p_itm_id, 'correlationId');
+      END IF;
+
+      IF l_stored_file_name IS NULL
+         OR l_stored_file_name <> p_file_name
+      THEN
+         raise_Replay_Conflict(p_req_id, p_itm_id, 'fileName');
+      END IF;
+
+      l_payload_compare := DBMS_LOB.compare(l_stored_file_body, p_file_body);
+
+      IF l_payload_compare IS NULL OR l_payload_compare <> 0 THEN
+         raise_Replay_Conflict(p_req_id, p_itm_id, 'fileBody');
+      END IF;
+
+
       RETURN TRUE;
 
    EXCEPTION
       WHEN NO_DATA_FOUND THEN
-         p_req_id         := NULL;
-         p_itm_id         := NULL;
-         p_ires_code      := NULL;
-         p_error_code     := NULL;
-         p_correlation_id := NULL;
+         p_req_id                := NULL;
+         p_itm_id                := NULL;
+         p_ires_code             := NULL;
+         p_error_code            := NULL;
+         p_cres_info             := NULL;
+         p_stored_correlation_id := NULL;
 
          RETURN FALSE;
    END find_Existing;
@@ -322,6 +471,7 @@ IS
 
       l_existing_ires       MI_0600.IRES_CODE%TYPE;
       l_existing_error      MI_0600.ERROR_CODE%TYPE;
+      l_existing_info       MI_0600.CRES_INFO%TYPE;
 
       l_own_savepoint       DCL.T_Name;
       l_business_savepoint  DCL.T_Name;
@@ -378,28 +528,30 @@ IS
          p_file_type    := NULL;
          p_parse_result := NULL;
 
-         p_ret_code := RET_EXISTS;
-
-         p_ret_info :=
-            SUBSTR(
-                  'DOCUMENT_RECEIVED already processed'
-               || '; req_id='
-               || l_req_id
-               || '; itm_id='
-               || l_itm_id
-               || CASE
-                     WHEN l_existing_ires IS NOT NULL
-                     THEN '; ires_code=' || l_existing_ires
-                     ELSE NULL
-                  END
-               || CASE
-                     WHEN l_existing_error IS NOT NULL
-                     THEN '; error_code=' || l_existing_error
-                     ELSE NULL
-                  END,
-               1,
-               4000
+         p_ret_code :=
+            replay_Return_Code(
+               p_ires_code  => l_existing_ires,
+               p_error_code => l_existing_error
             );
+
+         IF p_ret_code = RET_EXISTS THEN
+            p_ret_info :=
+               SUBSTR(
+                     'DOCUMENT_RECEIVED already processed'
+                  || '; req_id='
+                  || l_req_id
+                  || '; itm_id='
+                  || l_itm_id,
+                  1,
+                  4000
+               );
+         ELSE
+            p_ret_info :=
+               NVL(
+                  DBMS_LOB.substr(l_existing_info, 4000, 1),
+                  l_existing_error
+               );
+         END IF;
 
          l_log.context(
             p_inf_id         => cInfId,
@@ -408,15 +560,24 @@ IS
             p_correlation_id => l_correlation_id
          );
 
-         l_log.info(
-            p_message_text => 'DOCUMENT_RECEIVED replay detected',
-            p_action_code  => 'already_processed',
-            p_details_text => TO_CLOB(p_ret_info)
-         );
+         IF p_ret_code = RET_EXISTS THEN
+            l_log.info(
+               p_message_text => 'DOCUMENT_RECEIVED replay detected',
+               p_action_code  => 'already_processed',
+               p_details_text => TO_CLOB(p_ret_info)
+            );
+         ELSE
+            l_log.warn(
+               p_message_text =>
+                  'DOCUMENT_RECEIVED failed replay detected',
+               p_action_code  => 'already_failed',
+               p_details_text => TO_CLOB(p_ret_info)
+            );
+         END IF;
 
          l_log.exit_f(
             p_function_name => 'process_Document_Received',
-            p_message_text  => 'RET_EXISTS'
+            p_message_text  => NVL(l_existing_error, 'RET_EXISTS')
          );
       END return_Existing;
 
@@ -592,12 +753,18 @@ IS
       l_journal_name := journal_Name(l_message_uuid);
 
       IF find_Existing(
-            p_journal_name   => l_journal_name,
-            p_req_id         => l_req_id,
-            p_itm_id         => l_itm_id,
-            p_ires_code      => l_existing_ires,
-            p_error_code     => l_existing_error,
-            p_correlation_id => l_correlation_id
+            p_journal_name          => l_journal_name,
+            p_task_id               => l_task_id,
+            p_original_req_uuid     => l_original_req_uuid,
+            p_input_correlation_id  => l_input_correlation,
+            p_file_name             => l_file_name,
+            p_file_body             => p_file_body,
+            p_req_id                => l_req_id,
+            p_itm_id                => l_itm_id,
+            p_ires_code             => l_existing_ires,
+            p_error_code            => l_existing_error,
+            p_cres_info             => l_existing_info,
+            p_stored_correlation_id => l_correlation_id
          )
       THEN
          return_Existing;
@@ -646,12 +813,18 @@ IS
 
 
          IF find_Existing(
-               p_journal_name   => l_journal_name,
-               p_req_id         => l_req_id,
-               p_itm_id         => l_itm_id,
-               p_ires_code      => l_existing_ires,
-               p_error_code     => l_existing_error,
-               p_correlation_id => l_correlation_id
+               p_journal_name          => l_journal_name,
+               p_task_id               => l_task_id,
+               p_original_req_uuid     => l_original_req_uuid,
+               p_input_correlation_id  => l_input_correlation,
+               p_file_name             => l_file_name,
+               p_file_body             => p_file_body,
+               p_req_id                => l_req_id,
+               p_itm_id                => l_itm_id,
+               p_ires_code             => l_existing_ires,
+               p_error_code            => l_existing_error,
+               p_cres_info             => l_existing_info,
+               p_stored_correlation_id => l_correlation_id
             )
          THEN
             return_Existing;
@@ -930,12 +1103,18 @@ IS
             truth: if it appeared concurrently, this is a normal replay.
          */
          IF find_Existing(
-               p_journal_name   => l_journal_name,
-               p_req_id         => l_req_id,
-               p_itm_id         => l_itm_id,
-               p_ires_code      => l_existing_ires,
-               p_error_code     => l_existing_error,
-               p_correlation_id => l_correlation_id
+               p_journal_name          => l_journal_name,
+               p_task_id               => l_task_id,
+               p_original_req_uuid     => l_original_req_uuid,
+               p_input_correlation_id  => l_input_correlation,
+               p_file_name             => l_file_name,
+               p_file_body             => p_file_body,
+               p_req_id                => l_req_id,
+               p_itm_id                => l_itm_id,
+               p_ires_code             => l_existing_ires,
+               p_error_code            => l_existing_error,
+               p_cres_info             => l_existing_info,
+               p_stored_correlation_id => l_correlation_id
             )
          THEN
             return_Existing;
