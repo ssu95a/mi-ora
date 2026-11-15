@@ -22,6 +22,7 @@ DECLARE
 
    l_ret_code      NUMBER;
    l_ret_info      VARCHAR2(4000);
+   l_argument_cnt  PLS_INTEGER;
 
 
    PROCEDURE fail (
@@ -60,7 +61,57 @@ BEGIN
 
 
    ---------------------------------------------------------------------------
-   DBMS_OUTPUT.put_line('2. missing request returns RET_NO_DATA');
+   DBMS_OUTPUT.put_line('2. capture JDBC boundary contains four OUT arguments');
+
+   SELECT COUNT(*)
+     INTO l_argument_cnt
+     FROM USER_ARGUMENTS
+    WHERE PACKAGE_NAME = 'MI_0606_API'
+      AND OBJECT_NAME = 'CAPTURE_PENDING'
+      AND DATA_LEVEL = 0
+      AND IN_OUT = 'OUT'
+      AND ARGUMENT_NAME IN (
+             'P_CAPTURED_COUNT',
+             'P_SKIPPED_COUNT',
+             'P_RET_CODE',
+             'P_RET_INFO'
+          );
+
+   assert_True(
+      l_argument_cnt = 4,
+      'capture_Pending JDBC OUT contract is incomplete; count='
+      || l_argument_cnt
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('3. NULL source id returns RET_NO_DATA');
+
+   MI_0606_Api.create_Request(
+      p_outfile_id => NULL,
+      p_req_id     => l_req_id,
+      p_itm_id     => l_itm_id,
+      p_ret_code   => l_ret_code,
+      p_ret_info   => l_ret_info
+   );
+
+   assert_True(
+      l_ret_code = MI_0606_Api.RET_NO_DATA,
+      'NULL source id ret_code=' || NVL(TO_CHAR(l_ret_code), '<NULL>')
+   );
+
+   assert_True(
+      l_req_id IS NULL AND l_itm_id IS NULL,
+      'NULL source id returned request/item identity'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('4. missing request returns RET_NO_DATA');
 
    SELECT NVL(MIN(REQ_ID), 0) - 1
      INTO l_missing_id
@@ -97,7 +148,7 @@ BEGIN
 
 
    ---------------------------------------------------------------------------
-   DBMS_OUTPUT.put_line('3. invalid protocol input raises named technical error');
+   DBMS_OUTPUT.put_line('5. invalid protocol input raises named technical error');
 
    MI_ResultCtx.clear_Current;
 
@@ -131,7 +182,7 @@ BEGIN
 
 
    ---------------------------------------------------------------------------
-   DBMS_OUTPUT.put_line('4. NULL DOCUMENT_STATUS state is rejected');
+   DBMS_OUTPUT.put_line('6. NULL DOCUMENT_STATUS state is rejected');
 
    MI_ResultCtx.clear_Current;
 

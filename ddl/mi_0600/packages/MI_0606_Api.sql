@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_0606_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.1.0} {15.11.2026} Sulimoff$';
+      '$Id: {1.1.1} {15.11.2026} Sulimoff$';
 
 
    ---------------------------------------------------------------------------
@@ -1957,6 +1957,39 @@ IS
       END;
 
 
+      ------------------------------------------------------------------------
+      -- The first idempotency check is only a fast path. Another session may
+      -- finish the same source while this session waits for FOR UPDATE.
+      ------------------------------------------------------------------------
+      IF find_Existing_Source(
+            p_outfile_id => p_outfile_id,
+            p_req_id     => l_existing_req,
+            p_itm_id     => l_existing_itm
+         )
+      THEN
+         rollback_Or_Raise(
+            p_name => l_savepoint_name,
+            p_code => 'MI_0606_CREATE_ROLLBACK_FAILED',
+            p_info => 'Не удалось откатить concurrent create_Request replay'
+         );
+
+         p_req_id   := l_existing_req;
+         p_itm_id   := l_existing_itm;
+         p_ret_code := RET_EXISTS;
+
+         p_ret_info :=
+               'RSD_OUTFILES already registered'
+            || '; id='
+            || p_outfile_id
+            || '; req_id='
+            || l_existing_req
+            || '; itm_id='
+            || l_existing_itm;
+
+         RETURN;
+      END IF;
+
+
       create_Request_Impl(
          p_source   => l_source,
 
@@ -2138,22 +2171,29 @@ IS
       END IF;
 
 
-      FOR r IN c_source LOOP
+      OPEN c_source;
+
+
+      LOOP
+         EXIT WHEN l_scanned_count >= l_scan_max;
+
+
+         FETCH c_source
+          INTO l_source.id,
+               l_source.file_type,
+               l_source.file_name,
+               l_source.rec_state,
+               l_source.file_body,
+               l_source.bin_file,
+               l_source.task_id,
+               l_source.doc_key;
+
+
+         EXIT WHEN c_source%NOTFOUND;
+
+
          l_scanned_count :=
             l_scanned_count + 1;
-
-
-         EXIT WHEN l_scanned_count > l_scan_max;
-
-
-         l_source.id        := r.ID;
-         l_source.file_type := r.FILE_TYPE;
-         l_source.file_name := r.FILENAME;
-         l_source.rec_state := r.REC_STATE;
-         l_source.file_body := r.FILEBODY;
-         l_source.bin_file  := r.BINFILE;
-         l_source.task_id   := r.TASKID;
-         l_source.doc_key   := r.DOCKEY;
 
 
          ---------------------------------------------------------------------
@@ -2259,6 +2299,9 @@ IS
       END LOOP;
 
 
+      CLOSE c_source;
+
+
       p_ret_code := RET_OK;
 
       p_ret_info :=
@@ -2269,7 +2312,7 @@ IS
             || '; skipped='
             || p_skipped_count
             || '; scanned='
-            || LEAST(l_scanned_count, l_scan_max),
+            || l_scanned_count,
             1,
             4000
          );
@@ -2285,7 +2328,7 @@ IS
                || ', skipped='
                || p_skipped_count
                || ', scanned='
-               || LEAST(l_scanned_count, l_scan_max)
+               || l_scanned_count
             )
       );
 
@@ -2299,6 +2342,12 @@ IS
    EXCEPTION
       WHEN OTHERS THEN
          l_sqlerrm := SQLERRM;
+
+
+         IF c_source%ISOPEN THEN
+            CLOSE c_source;
+         END IF;
+
 
          l_rollback_ok :=
             rollback_Savepoint(l_savepoint_name);
