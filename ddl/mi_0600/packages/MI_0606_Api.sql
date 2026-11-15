@@ -56,6 +56,35 @@ IS
       p_ret_info    OUT VARCHAR2
    );
 
+   ---------------------------------------------------------------------------
+   /*
+      Регистрирует pending RSD_OUTFILES для исходящего вида сведений 606.
+
+      Все настройки читаются из MI_Prp для INF_ID=606:
+
+         ENABLED            default 1
+         CAPTURE_MAX_FILES  default 10
+         CAPTURE_SCAN_MAX   default 1000
+
+      CAPTURE_MAX_FILES ограничивает количество реально зарегистрированных
+      SEND_DOCUMENT за один вызов.
+
+      CAPTURE_SCAN_MAX ограничивает количество просмотренных source rows,
+      чтобы ошибочные записи в начале очереди не блокировали обработку
+      последующих документов и одновременно не было неограниченного scan.
+
+      Конкурентные worker'ы разделяют source rows через
+      FOR UPDATE SKIP LOCKED.
+
+      COMMIT процедура не выполняет.
+   */
+   PROCEDURE capture_Pending (
+      p_captured_count  OUT PLS_INTEGER,
+      p_skipped_count   OUT PLS_INTEGER,
+
+      p_ret_code        OUT NUMBER,
+      p_ret_info        OUT VARCHAR2
+   );
 
    ---------------------------------------------------------------------------
    /*
@@ -174,6 +203,19 @@ IS
    g_log CONSTANT MI_Logger_T := MI_Logger_T( p_logger_name => cLogger, p_package_name => $$PLSQL_UNIT );
 
 
+   ---------------------------------------------------------------------------
+   TYPE source_Row_t IS RECORD (
+      id         RSD_OUTFILES.ID%TYPE,
+      file_type  RSD_OUTFILES.FILE_TYPE%TYPE,
+      file_name  RSD_OUTFILES.FILENAME%TYPE,
+      rec_state  RSD_OUTFILES.REC_STATE%TYPE,
+      file_body  RSD_OUTFILES.FILEBODY%TYPE,
+      bin_file   RSD_OUTFILES.BINFILE%TYPE,
+      task_id    RSD_OUTFILES.TASKID%TYPE,
+      doc_key    RSD_OUTFILES.DOCKEY%TYPE
+   );
+   
+   
    /* */
    FUNCTION get_Version
       RETURN VARCHAR2
@@ -197,6 +239,104 @@ IS
          p_details => p_details
       );
    END raise_Technical_Error;
+
+   ---------------------------------------------------------------------------
+   FUNCTION capture_Int_Property (
+      p_name          IN VARCHAR2,
+      p_default_value IN PLS_INTEGER,
+      p_min_value     IN PLS_INTEGER,
+      p_max_value     IN PLS_INTEGER
+   )
+      RETURN PLS_INTEGER
+   IS
+      l_raw    VARCHAR2(32767);
+      l_value  NUMBER;
+   BEGIN
+      l_raw :=
+         MI_Prp.get_Inf_Property(
+            p_inf_id    => cInfId,
+            p_prp_id    => p_name,
+            p_def_value => TO_CHAR(p_default_value)
+         );
+
+
+      BEGIN
+         l_value := TO_NUMBER(TRIM(l_raw));
+
+      EXCEPTION
+         WHEN VALUE_ERROR THEN
+            raise_Technical_Error(
+               p_code => 'MI_0606_INVALID_CAPTURE_PROPERTY',
+               p_info =>
+                     'Invalid '
+                  || p_name
+                  || '='
+                  || NVL(l_raw, '<NULL>')
+            );
+      END;
+
+
+      IF l_value <> TRUNC(l_value)
+         OR l_value < p_min_value
+         OR l_value > p_max_value
+      THEN
+         raise_Technical_Error(
+            p_code => 'MI_0606_INVALID_CAPTURE_PROPERTY',
+            p_info =>
+                  'Invalid '
+               || p_name
+               || '='
+               || NVL(l_raw, '<NULL>')
+               || '; expected integer '
+               || p_min_value
+               || '..'
+               || p_max_value
+         );
+      END IF;
+
+
+      RETURN TRUNC(l_value);
+   END capture_Int_Property;
+
+
+   ---------------------------------------------------------------------------
+   FUNCTION capture_Enabled
+      RETURN BOOLEAN
+   IS
+      l_value VARCHAR2(32767);
+   BEGIN
+      l_value :=
+         TRIM(
+            MI_Prp.get_Inf_Property(
+               p_inf_id    => cInfId,
+               p_prp_id    => 'ENABLED',
+               p_def_value => '1'
+            )
+         );
+
+
+      IF l_value = '1' THEN
+         RETURN TRUE;
+      END IF;
+
+
+      IF l_value = '0' THEN
+         RETURN FALSE;
+      END IF;
+
+
+      raise_Technical_Error(
+         p_code => 'MI_0606_INVALID_CAPTURE_PROPERTY',
+         p_info =>
+               'Invalid ENABLED='
+            || NVL(l_value, '<NULL>')
+            || '; expected 0 or 1'
+      );
+
+
+      RETURN FALSE; -- unreachable
+   END capture_Enabled;
+
 
 
    /*
@@ -429,437 +569,6 @@ IS
    END find_Existing_Source;
 
 
-   /* */
-   PROCEDURE create_Request (
-      p_outfile_id  IN  RSD_OUTFILES.ID%TYPE,
-
-      p_req_id      OUT MI_REQ.REQ_ID%TYPE,
-      p_itm_id      OUT MI_0600.ITM_ID%TYPE,
-
-      p_ret_code    OUT NUMBER,
-      p_ret_info    OUT VARCHAR2
-   )
-   IS
-      l_file_type       RSD_OUTFILES.FILE_TYPE%TYPE;
-      l_file_name       RSD_OUTFILES.FILENAME%TYPE;
-      l_rec_state       RSD_OUTFILES.REC_STATE%TYPE;
-      l_file_body       RSD_OUTFILES.FILEBODY%TYPE;
-      l_bin_file        RSD_OUTFILES.BINFILE%TYPE;
-      l_task_id         RSD_OUTFILES.TASKID%TYPE;
-      l_doc_key         RSD_OUTFILES.DOCKEY%TYPE;
-
-      l_doc_type        VARCHAR2(100);
-      l_error_code      VARCHAR2(100);
-
-      l_payload         BLOB;
-      l_payload_temp    BOOLEAN := FALSE;
-
-      l_journal_name    MI_0600.CZIP_NAME%TYPE;
-
-      l_request_result  MI_ResultCtx.exec_Result_t;
-
-      l_req_id          MI_REQ.REQ_ID%TYPE;
-      l_itm_id          MI_0600.ITM_ID%TYPE;
-
-      l_correlation_id  MI_REQ.CORRELATION_ID%TYPE;
-
-      l_savepoint_name  DCL.T_Name;
-
-      l_sqlerrm         VARCHAR2(2000);
-      l_rollback_ok     BOOLEAN;
-
-      l_log             MI_Logger_T := g_log;
-
-
-      FUNCTION rollback_Own_Work
-         RETURN BOOLEAN
-      IS
-      BEGIN
-         RETURN rollback_Savepoint(l_savepoint_name);
-      END rollback_Own_Work;
-
-
-      PROCEDURE rollback_For_Result
-      IS
-      BEGIN
-      
-         IF NOT rollback_Own_Work() THEN
-            raise_Technical_Error(
-               p_code => 'MI_0606_ROLLBACK_FAILED',
-               p_info => 'Не удалось откатить собственную работу; требуется полный rollback транзакции'
-            );
-         END IF;
-         
-      END rollback_For_Result;
-
-
-      PROCEDURE return_Existing
-      IS
-      BEGIN
-      
-         p_req_id   := l_req_id;
-         p_itm_id   := l_itm_id;
-         p_ret_code := RET_EXISTS;
-
-         p_ret_info := SUBSTR( 'RSD_OUTFILES already registered' || '; id=' || p_outfile_id || '; req_id=' || l_req_id || '; itm_id=' || l_itm_id,  1, 4000  );
-         
-      END return_Existing;
-
-
-   BEGIN
-   
-      p_req_id   := NULL;
-      p_itm_id   := NULL;
-      p_ret_code := RET_FAIL;
-      p_ret_info := NULL;
-
-
-      IF p_outfile_id IS NULL THEN
-         p_ret_code := RET_NO_DATA;
-         p_ret_info := 'p_outfile_id must not be NULL';
-         RETURN;
-      END IF;
-
-
-      -- Идемпотентный повтор уже зарегистрированной source row.
-      IF find_Existing_Source( p_outfile_id => p_outfile_id, p_req_id => l_req_id, p_itm_id => l_itm_id )
-      THEN
-         return_Existing;
-         RETURN;
-      END IF;
-
-
-      l_log.enter_f( p_function_name => 'create_Request', p_message_text  => 'RSD_OUTFILES.id=' || p_outfile_id );
-
-      DCL.SavePoint(l_savepoint_name);
-
-      IF l_savepoint_name IS NULL THEN
-      
-         raise_Technical_Error(
-            p_code => 'MI_0606_SAVEPOINT_UNAVAILABLE',
-            p_info => 'DCL did not create the capture savepoint'
-         );
-         
-      END IF;
-
-
-      -- Источник блокируется до COMMIT / ROLLBACK вызывающего кода.
-      BEGIN
-      
-         SELECT FILE_TYPE,
-                FILENAME,
-                REC_STATE,
-                FILEBODY,
-                BINFILE,
-                TASKID,
-                DOCKEY
-           INTO l_file_type,
-                l_file_name,
-                l_rec_state,
-                l_file_body,
-                l_bin_file,
-                l_task_id,
-                l_doc_key
-           FROM RSD_OUTFILES
-          WHERE ID = p_outfile_id
-            FOR UPDATE;
-
-      EXCEPTION
-         WHEN NO_DATA_FOUND THEN
-             rollback_For_Result();
-
-            p_ret_code := RET_NO_DATA;
-            p_ret_info := 'RSD_OUTFILES row not found: id=' || p_outfile_id;
-
-            RETURN;
-      END;
-
-
-      -- После конкурентного capture строка уже могла сменить REC_STATE.
-      IF l_rec_state IS NULL OR TRIM(l_rec_state) <> '0'
-      THEN
-         rollback_For_Result();
-
-
-         IF find_Existing_Source(
-               p_outfile_id => p_outfile_id,
-               p_req_id     => l_req_id,
-               p_itm_id     => l_itm_id
-            )
-         THEN
-            return_Existing;
-            RETURN;
-         END IF;
-
-
-         p_ret_code := RET_BAD_STATE;
-
-         p_ret_info :=
-            SUBSTR(
-                  'RSD_OUTFILES has invalid REC_STATE='
-               || NVL(TRIM(l_rec_state), '<NULL>')
-               || ', expected 0; id='
-               || p_outfile_id,
-               1,
-               4000
-            );
-
-         RETURN;
-      END IF;
-
-
-      l_file_name := TRIM(l_file_name);
-      l_task_id   := TRIM(l_task_id);
-      l_doc_key   := TRIM(l_doc_key);
-
-
-      IF l_file_name IS NULL THEN
-
-         rollback_For_Result();
-
-         p_ret_code := RET_FAIL;
-         p_ret_info := 'RSD_OUTFILES.FILENAME is empty';
-
-         RETURN;
-         
-      END IF;
-
-
-      IF l_task_id IS NULL OR NOT MI_Utils.is_Uuid(l_task_id)
-      THEN
-      
-         rollback_For_Result();
-
-         p_ret_code := RET_FAIL;
-         p_ret_info := 'RSD_OUTFILES.TASKID must be UUID: ' || NVL(l_task_id, '<NULL>');
-
-         RETURN;
-         
-      END IF;
-
-
-      IF l_doc_key IS NULL OR NOT MI_Utils.is_Uuid(l_doc_key)
-      THEN
-         rollback_For_Result();
-
-         p_ret_code := RET_FAIL;
-         p_ret_info := 'RSD_OUTFILES.DOCKEY must be UUID: ' || NVL(l_doc_key, '<NULL>');
-
-         RETURN;
-         
-      END IF;
-
-      -- Business mapping RSD -> SEND_DOCUMENT.
-      l_doc_type   := map_Doc_Type(l_file_type);
-      l_error_code := map_Error_Code(l_file_type);
-
-
-      IF l_doc_type IS NULL AND l_error_code IS NULL
-      THEN
-
-         rollback_For_Result();
-
-         p_ret_code := RET_UNSUPPORTED_FILE_TYPE;
-         p_ret_info := SUBSTR( 'Unsupported RSD_OUTFILES.FILE_TYPE=' || NVL(TRIM(l_file_type), '<NULL>') || '; id='  || p_outfile_id, 1, 4000  );
-
-         RETURN;
-         
-      END IF;
-
-
-      /*
-         The current physical journal can reproduce only the confirmed PB2
-         contract without rereading RSD_OUTFILES. Do not admit another mapping
-         until its resolved value has a dedicated snapshot field.
-      */
-      IF l_doc_type IS NULL OR l_doc_type <> cDocTypePb2 OR l_error_code IS NOT NULL
-      THEN
-         
-         rollback_For_Result();
-
-         p_ret_code := RET_UNSUPPORTED_FILE_TYPE;
-         p_ret_info := 'FILE_TYPE mapping has no durable MI journal snapshot';
-
-         RETURN;
-         
-      END IF;
-
-
-      -- Формируем byte snapshot исходящего документа.
-      --
-      -- Если business module заполнил BINFILE, используем его.
-      -- Иначе FILEBODY конвертируется в UTF-8.
-      IF l_bin_file IS NOT NULL AND DBMS_LOB.getlength(l_bin_file) > 0
-      THEN
-         l_payload := l_bin_file;
-      ELSIF l_file_body IS NOT NULL
-         AND DBMS_LOB.getlength(l_file_body) > 0
-      THEN
-         l_payload := clob_To_Utf8_Blob(l_file_body);
-         l_payload_temp := TRUE;
-
-      ELSE
-
-         rollback_For_Result();
-
-         p_ret_code := RET_FAIL;
-         p_ret_info := 'RSD_OUTFILES contains no document body';
-
-         RETURN;
-      END IF;
-      
-
-      -- Создаём MI_REQ исходящего 606.
-      l_request_result :=
-         MI_Request_Api.create_Request(
-            p_inf_id        => cInfId,
-            p_ctaxreq_id    => l_task_id,
-            p_status_cd     => MI_Request_Api.STATUS_NEW
-         );
-
-
-      IF MI_ResultCtx.is_Failed(l_request_result) THEN
-         MI_ResultCtx.raise_Error(
-            MI_ResultCtx.wrap_Exception(
-               p_cause => l_request_result,
-               p_code  => 'MI_0606_REQUEST_HEADER_FAILED',
-               p_info  => 'Не удалось создать MI_REQ для SEND_DOCUMENT'
-            )
-         );
-      END IF;
-
-
-      l_req_id         := TO_NUMBER( l_request_result.parameters('req_id') );
-      l_correlation_id := l_request_result.parameters('correlation_id');
-
-      IF l_req_id IS NULL THEN
-         raise_Technical_Error(
-            p_code => 'MI_0606_REQUEST_ID_MISSING',
-            p_info => 'MI_Request_Api.create_Request returned NULL req_id'
-         );
-      END IF;
-
-
-      -- Один RSD_OUTFILES = один MI_0600 item.
-      --
-      -- EXTERNAL_UUID намеренно равен DOCKEY.
-      -- По нему позже приходит DOCUMENT_STATUS.
-      l_journal_name := journal_Name(p_outfile_id);
-
-
-      INSERT INTO MI_0600 (
-         EXTERNAL_UUID,
-         REQ_ID,
-
-         CZIP_NAME,
-         BZIP_DATA,
-         IZIP_SIZE,
-         IZIP_FILES_COUNT,
-
-         ICREATE_TYPE
-      )
-      VALUES (
-         l_doc_key,
-         l_req_id,
-
-         l_journal_name,
-         l_payload,
-         DBMS_LOB.getlength(l_payload),
-         1,
-
-         1
-      )
-      RETURNING ITM_ID
-           INTO l_itm_id;
-
-
-      -- Реальное business filename.
-      INSERT INTO MI_0600_F (
-         ITM_ID,
-         CZIP_FILE_NAME
-      )
-      VALUES (
-         l_itm_id,
-         l_file_name
-      );
-
-
-      -- Source row считается зарегистрированной в MI journal.
-      UPDATE RSD_OUTFILES
-         SET REC_STATE = '1'
-       WHERE ID = p_outfile_id
-         AND REC_STATE = '0';
-
-
-      IF SQL%ROWCOUNT <> 1 THEN
-      
-         raise_Technical_Error( 
-            p_code => 'MI_0606_SOURCE_STATE_NOT_UPDATED',
-            p_info => 'RSD_OUTFILES state update failed: id=' || p_outfile_id || ', rows=' || SQL%ROWCOUNT 
-         );
-         
-      END IF;
-
-
-      p_req_id   := l_req_id;
-      p_itm_id   := l_itm_id;
-      p_ret_code := RET_OK;
-
-      p_ret_info := 'SEND_DOCUMENT request created';
-
-      l_log.context (
-         p_inf_id         => cInfId,
-         p_req_id         => l_req_id,
-         p_itm_id         => l_itm_id,
-         p_correlation_id => l_correlation_id
-      );
-
-      l_log.info(
-         p_message_text => 'SEND_DOCUMENT request created',
-         p_action_code  => 'create',
-         p_details_text => TO_CLOB( 'RSD_OUTFILES.id=' || p_outfile_id || ', docKey='  || l_doc_key || ', fileType=' || l_file_type )
-      );
-
-
-      l_log.exit_f(
-         p_function_name => 'create_Request',
-         p_message_text  => 'OK'
-      );
-
-
-      IF l_payload_temp THEN
-         free_Temporary_Blob(l_payload);
-      END IF;
-
-
-   EXCEPTION
-      WHEN OTHERS THEN
-         l_sqlerrm     := SQLERRM;
-         l_rollback_ok := rollback_Own_Work();
-
-
-         IF l_payload_temp THEN
-            free_Temporary_Blob(l_payload);
-         END IF;
-
-
-         l_log.error(
-            p_message_text => 'create_Request failed',
-            p_action_code  => 'create',
-            p_details_text =>
-               TO_CLOB(
-                     l_sqlerrm
-                  || CHR(10)
-                  || DBMS_UTILITY.format_error_backtrace
-                  || CHR(10)
-                  || 'own_rollback='
-                  || MI_Utils.to_Char(l_rollback_ok)
-               )
-         );
-
-         RAISE;
-         
-   END create_Request;
 
 
    /* */
@@ -1816,6 +1525,805 @@ IS
          RAISE;
    END apply_Fault;
 
+
+   ---------------------------------------------------------------------------
+   PROCEDURE create_Request_Impl (
+      p_source    IN  source_Row_t,
+
+      p_req_id    OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id    OUT MI_0600.ITM_ID%TYPE,
+
+      p_ret_code  OUT NUMBER,
+      p_ret_info  OUT VARCHAR2
+   )
+   IS
+      l_file_name       RSD_OUTFILES.FILENAME%TYPE;
+      l_task_id         RSD_OUTFILES.TASKID%TYPE;
+      l_doc_key         RSD_OUTFILES.DOCKEY%TYPE;
+
+      l_doc_type        VARCHAR2(100);
+      l_error_code      VARCHAR2(100);
+
+      l_payload         BLOB;
+      l_payload_temp    BOOLEAN := FALSE;
+
+      l_journal_name    MI_0600.CZIP_NAME%TYPE;
+
+      l_request_result  MI_ResultCtx.exec_Result_t;
+      l_correlation_id  MI_REQ.CORRELATION_ID%TYPE;
+
+      l_log             MI_Logger_T := g_log;
+   BEGIN
+      p_req_id   := NULL;
+      p_itm_id   := NULL;
+      p_ret_code := RET_FAIL;
+      p_ret_info := NULL;
+
+
+      ------------------------------------------------------------------------
+      -- Expected source-data failures должны определяться ДО первого DML.
+      ------------------------------------------------------------------------
+      IF p_source.id IS NULL THEN
+         raise_Technical_Error(
+            p_code => 'MI_0606_SOURCE_ID_MISSING',
+            p_info => 'Internal source row has NULL ID'
+         );
+      END IF;
+
+
+      IF p_source.rec_state IS NULL
+         OR TRIM(p_source.rec_state) <> '0'
+      THEN
+         p_ret_code := RET_BAD_STATE;
+
+         p_ret_info :=
+               'RSD_OUTFILES has invalid REC_STATE='
+            || NVL(TRIM(p_source.rec_state), '<NULL>')
+            || ', expected 0; id='
+            || p_source.id;
+
+         RETURN;
+      END IF;
+
+
+      l_file_name := TRIM(p_source.file_name);
+      l_task_id   := TRIM(p_source.task_id);
+      l_doc_key   := TRIM(p_source.doc_key);
+
+
+      IF l_file_name IS NULL THEN
+         p_ret_code := RET_FAIL;
+         p_ret_info := 'RSD_OUTFILES.FILENAME is empty; id=' || p_source.id;
+         RETURN;
+      END IF;
+
+
+      IF l_task_id IS NULL
+         OR NOT MI_Utils.is_Uuid(l_task_id)
+      THEN
+         p_ret_code := RET_FAIL;
+
+         p_ret_info :=
+               'RSD_OUTFILES.TASKID must be UUID: '
+            || NVL(l_task_id, '<NULL>')
+            || '; id='
+            || p_source.id;
+
+         RETURN;
+      END IF;
+
+
+      IF l_doc_key IS NULL
+         OR NOT MI_Utils.is_Uuid(l_doc_key)
+      THEN
+         p_ret_code := RET_FAIL;
+
+         p_ret_info :=
+               'RSD_OUTFILES.DOCKEY must be UUID: '
+            || NVL(l_doc_key, '<NULL>')
+            || '; id='
+            || p_source.id;
+
+         RETURN;
+      END IF;
+
+
+      ------------------------------------------------------------------------
+      -- Business mapping RSD -> SEND_DOCUMENT.
+      ------------------------------------------------------------------------
+      l_doc_type :=
+         map_Doc_Type(p_source.file_type);
+
+      l_error_code :=
+         map_Error_Code(p_source.file_type);
+
+
+      IF l_doc_type IS NULL
+         AND l_error_code IS NULL
+      THEN
+         p_ret_code := RET_UNSUPPORTED_FILE_TYPE;
+
+         p_ret_info :=
+               'Unsupported RSD_OUTFILES.FILE_TYPE='
+            || NVL(TRIM(p_source.file_type), '<NULL>')
+            || '; id='
+            || p_source.id;
+
+         RETURN;
+      END IF;
+
+
+      /*
+         Пока journal умеет без повторного чтения mutable RSD_OUTFILES
+         воспроизвести только подтверждённый PB2 mapping.
+      */
+      IF l_doc_type IS NULL
+         OR l_doc_type <> cDocTypePb2
+         OR l_error_code IS NOT NULL
+      THEN
+         p_ret_code := RET_UNSUPPORTED_FILE_TYPE;
+
+         p_ret_info :=
+               'FILE_TYPE mapping has no durable MI journal snapshot'
+            || '; id='
+            || p_source.id;
+
+         RETURN;
+      END IF;
+
+
+      ------------------------------------------------------------------------
+      -- Payload snapshot.
+      ------------------------------------------------------------------------
+      IF p_source.bin_file IS NOT NULL
+         AND DBMS_LOB.getlength(p_source.bin_file) > 0
+      THEN
+         l_payload := p_source.bin_file;
+
+      ELSIF p_source.file_body IS NOT NULL
+         AND DBMS_LOB.getlength(p_source.file_body) > 0
+      THEN
+         l_payload :=
+            clob_To_Utf8_Blob(p_source.file_body);
+
+         l_payload_temp := TRUE;
+
+      ELSE
+         p_ret_code := RET_FAIL;
+
+         p_ret_info :=
+               'RSD_OUTFILES contains no document body; id='
+            || p_source.id;
+
+         RETURN;
+      END IF;
+
+
+      ------------------------------------------------------------------------
+      -- Всё ниже является единым durable DML.
+      -- Ошибка здесь уже technical и должна RAISE.
+      ------------------------------------------------------------------------
+      l_request_result :=
+         MI_Request_Api.create_Request(
+            p_inf_id     => cInfId,
+            p_ctaxreq_id => l_task_id,
+            p_status_cd  => MI_Request_Api.STATUS_NEW
+         );
+
+
+      IF MI_ResultCtx.is_Failed(l_request_result) THEN
+         MI_ResultCtx.raise_Error(
+            MI_ResultCtx.wrap_Exception(
+               p_cause => l_request_result,
+               p_code  => 'MI_0606_REQUEST_HEADER_FAILED',
+               p_info  => 'Не удалось создать MI_REQ для SEND_DOCUMENT'
+            )
+         );
+      END IF;
+
+
+      p_req_id :=
+         TO_NUMBER(
+            l_request_result.parameters('req_id')
+         );
+
+      l_correlation_id :=
+         l_request_result.parameters('correlation_id');
+
+
+      IF p_req_id IS NULL THEN
+         raise_Technical_Error(
+            p_code => 'MI_0606_REQUEST_ID_MISSING',
+            p_info => 'MI_Request_Api.create_Request returned NULL req_id'
+         );
+      END IF;
+
+
+      l_journal_name :=
+         journal_Name(p_source.id);
+
+
+      /*
+         DOCKEY является business identity SEND_DOCUMENT.
+         Поэтому MI_0600.EXTERNAL_UUID = DOCKEY.
+      */
+      INSERT INTO MI_0600 (
+         EXTERNAL_UUID,
+         REQ_ID,
+
+         CZIP_NAME,
+         BZIP_DATA,
+         IZIP_SIZE,
+         IZIP_FILES_COUNT,
+
+         ICREATE_TYPE
+      )
+      VALUES (
+         l_doc_key,
+         p_req_id,
+
+         l_journal_name,
+         l_payload,
+         DBMS_LOB.getlength(l_payload),
+         1,
+
+         1
+      )
+      RETURNING ITM_ID
+           INTO p_itm_id;
+
+
+      INSERT INTO MI_0600_F (
+         ITM_ID,
+         CZIP_FILE_NAME
+      )
+      VALUES (
+         p_itm_id,
+         l_file_name
+      );
+
+
+      ------------------------------------------------------------------------
+      -- Source становится captured только после создания полного MI journal.
+      ------------------------------------------------------------------------
+      UPDATE RSD_OUTFILES
+         SET REC_STATE = '1'
+       WHERE ID = p_source.id
+         AND REC_STATE = '0';
+
+
+      IF SQL%ROWCOUNT <> 1 THEN
+         raise_Technical_Error(
+            p_code => 'MI_0606_SOURCE_STATE_NOT_UPDATED',
+            p_info =>
+                  'RSD_OUTFILES state update failed: id='
+               || p_source.id
+               || ', rows='
+               || SQL%ROWCOUNT
+         );
+      END IF;
+
+
+      p_ret_code := RET_OK;
+      p_ret_info := 'SEND_DOCUMENT request created';
+
+
+      l_log.context(
+         p_inf_id         => cInfId,
+         p_req_id         => p_req_id,
+         p_itm_id         => p_itm_id,
+         p_correlation_id => l_correlation_id
+      );
+
+
+      l_log.info(
+         p_message_text => 'SEND_DOCUMENT request created',
+         p_action_code  => 'create',
+         p_details_text =>
+            TO_CLOB(
+                  'RSD_OUTFILES.id='
+               || p_source.id
+               || ', docKey='
+               || l_doc_key
+               || ', fileType='
+               || p_source.file_type
+            )
+      );
+
+
+      IF l_payload_temp THEN
+         free_Temporary_Blob(l_payload);
+      END IF;
+
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         IF l_payload_temp THEN
+            free_Temporary_Blob(l_payload);
+         END IF;
+
+         RAISE;
+   END create_Request_Impl;
+
+
+      ---------------------------------------------------------------------------
+   PROCEDURE create_Request (
+      p_outfile_id  IN  RSD_OUTFILES.ID%TYPE,
+
+      p_req_id      OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id      OUT MI_0600.ITM_ID%TYPE,
+
+      p_ret_code    OUT NUMBER,
+      p_ret_info    OUT VARCHAR2
+   )
+   IS
+      l_source          source_Row_t;
+
+      l_existing_req    MI_REQ.REQ_ID%TYPE;
+      l_existing_itm    MI_0600.ITM_ID%TYPE;
+
+      l_savepoint_name  DCL.T_Name;
+      l_rollback_ok     BOOLEAN;
+
+      l_sqlerrm         VARCHAR2(2000);
+   BEGIN
+      p_req_id   := NULL;
+      p_itm_id   := NULL;
+      p_ret_code := RET_FAIL;
+      p_ret_info := NULL;
+
+
+      IF p_outfile_id IS NULL THEN
+         p_ret_code := RET_NO_DATA;
+         p_ret_info := 'p_outfile_id must not be NULL';
+         RETURN;
+      END IF;
+
+
+      ------------------------------------------------------------------------
+      -- Normal idempotent replay.
+      ------------------------------------------------------------------------
+      IF find_Existing_Source(
+            p_outfile_id => p_outfile_id,
+            p_req_id     => l_existing_req,
+            p_itm_id     => l_existing_itm
+         )
+      THEN
+         p_req_id   := l_existing_req;
+         p_itm_id   := l_existing_itm;
+         p_ret_code := RET_EXISTS;
+
+         p_ret_info :=
+               'RSD_OUTFILES already registered'
+            || '; id='
+            || p_outfile_id
+            || '; req_id='
+            || l_existing_req
+            || '; itm_id='
+            || l_existing_itm;
+
+         RETURN;
+      END IF;
+
+
+      DCL.SavePoint(l_savepoint_name);
+
+      IF l_savepoint_name IS NULL THEN
+         raise_Technical_Error(
+            p_code => 'MI_0606_SAVEPOINT_UNAVAILABLE',
+            p_info => 'DCL did not create the create_Request savepoint'
+         );
+      END IF;
+
+
+      ------------------------------------------------------------------------
+      -- Direct/manual call waits for the requested source row.
+      ------------------------------------------------------------------------
+      BEGIN
+         SELECT ID,
+                FILE_TYPE,
+                FILENAME,
+                REC_STATE,
+                FILEBODY,
+                BINFILE,
+                TASKID,
+                DOCKEY
+           INTO l_source.id,
+                l_source.file_type,
+                l_source.file_name,
+                l_source.rec_state,
+                l_source.file_body,
+                l_source.bin_file,
+                l_source.task_id,
+                l_source.doc_key
+           FROM RSD_OUTFILES
+          WHERE ID = p_outfile_id
+            FOR UPDATE;
+
+      EXCEPTION
+         WHEN NO_DATA_FOUND THEN
+            rollback_Or_Raise(
+               p_name => l_savepoint_name,
+               p_code => 'MI_0606_CREATE_ROLLBACK_FAILED',
+               p_info => 'Не удалось откатить create_Request'
+            );
+
+            p_ret_code := RET_NO_DATA;
+            p_ret_info :=
+               'RSD_OUTFILES row not found: id='
+               || p_outfile_id;
+
+            RETURN;
+      END;
+
+
+      create_Request_Impl(
+         p_source   => l_source,
+
+         p_req_id   => p_req_id,
+         p_itm_id   => p_itm_id,
+
+         p_ret_code => p_ret_code,
+         p_ret_info => p_ret_info
+      );
+
+
+      /*
+         Expected source rejection не должен оставлять даже случайных
+         изменений внутри wrapper.
+      */
+      IF p_ret_code <> RET_OK THEN
+         rollback_Or_Raise(
+            p_name => l_savepoint_name,
+            p_code => 'MI_0606_CREATE_ROLLBACK_FAILED',
+            p_info => 'Не удалось откатить rejected create_Request'
+         );
+      END IF;
+
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         l_sqlerrm := SQLERRM;
+
+         l_rollback_ok :=
+            rollback_Savepoint(l_savepoint_name);
+
+
+         g_log.error(
+            p_message_text => 'create_Request failed',
+            p_action_code  => 'create',
+            p_details_text =>
+               TO_CLOB(
+                     l_sqlerrm
+                  || CHR(10)
+                  || DBMS_UTILITY.format_error_backtrace
+                  || CHR(10)
+                  || 'own_rollback='
+                  || MI_Utils.to_Char(l_rollback_ok)
+               )
+         );
+
+
+         RAISE;
+   END create_Request;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE capture_Pending (
+      p_captured_count  OUT PLS_INTEGER,
+      p_skipped_count   OUT PLS_INTEGER,
+
+      p_ret_code        OUT NUMBER,
+      p_ret_info        OUT VARCHAR2
+   )
+   IS
+      l_source            source_Row_t;
+
+      l_req_id            MI_REQ.REQ_ID%TYPE;
+      l_itm_id            MI_0600.ITM_ID%TYPE;
+
+      l_existing_req_id   MI_REQ.REQ_ID%TYPE;
+      l_existing_itm_id   MI_0600.ITM_ID%TYPE;
+
+      l_row_ret_code      NUMBER;
+      l_row_ret_info      VARCHAR2(4000);
+
+      l_max_count         PLS_INTEGER;
+      l_scan_max          PLS_INTEGER;
+
+      l_scanned_count     PLS_INTEGER := 0;
+
+      l_savepoint_name    DCL.T_Name;
+      l_rollback_ok       BOOLEAN;
+      l_sqlerrm           VARCHAR2(2000);
+
+      l_log               MI_Logger_T := g_log;
+
+
+      /*
+         Не используем row limiting clause вместе с FOR UPDATE:
+         Oracle 12.1 имеет ограничения на такую комбинацию.
+
+         Cursor идёт по pending rows в ID order.
+         CAPTURE_SCAN_MAX ограничивает реальное число FETCH.
+      */
+      CURSOR c_source
+      IS
+         SELECT ID,
+                FILE_TYPE,
+                FILENAME,
+                REC_STATE,
+                FILEBODY,
+                BINFILE,
+                TASKID,
+                DOCKEY
+           FROM RSD_OUTFILES
+          WHERE REC_STATE = '0'
+          ORDER BY ID
+            FOR UPDATE SKIP LOCKED;
+
+
+   BEGIN
+      p_captured_count := 0;
+      p_skipped_count  := 0;
+      p_ret_code       := RET_FAIL;
+      p_ret_info       := NULL;
+
+
+      ------------------------------------------------------------------------
+      -- Вся operational configuration находится в БД.
+      ------------------------------------------------------------------------
+      IF NOT capture_Enabled THEN
+         p_ret_code := RET_OK;
+         p_ret_info := 'MI_0606 capture disabled';
+
+         RETURN;
+      END IF;
+
+
+      l_max_count :=
+         capture_Int_Property(
+            p_name          => 'CAPTURE_MAX_FILES',
+            p_default_value => 10,
+            p_min_value     => 1,
+            p_max_value     => 1000
+         );
+
+
+      l_scan_max :=
+         capture_Int_Property(
+            p_name          => 'CAPTURE_SCAN_MAX',
+            p_default_value => 1000,
+            p_min_value     => 1,
+            p_max_value     => 100000
+         );
+
+
+      /*
+         Scan limit не должен быть меньше количества документов,
+         которое разрешено capture.
+      */
+      IF l_scan_max < l_max_count THEN
+         raise_Technical_Error(
+            p_code => 'MI_0606_INVALID_CAPTURE_PROPERTY',
+            p_info =>
+                  'CAPTURE_SCAN_MAX='
+               || l_scan_max
+               || ' must be >= CAPTURE_MAX_FILES='
+               || l_max_count
+         );
+      END IF;
+
+
+      l_log.enter_f(
+         p_function_name => 'capture_Pending',
+         p_message_text  =>
+               'max_count='
+            || l_max_count
+            || ', scan_max='
+            || l_scan_max
+      );
+
+
+      ------------------------------------------------------------------------
+      -- Technical failure должен удалить весь batch этого вызова.
+      ------------------------------------------------------------------------
+      DCL.SavePoint(l_savepoint_name);
+
+      IF l_savepoint_name IS NULL THEN
+         raise_Technical_Error(
+            p_code => 'MI_0606_CAPTURE_SAVEPOINT_UNAVAILABLE',
+            p_info => 'DCL did not create the capture_Pending savepoint'
+         );
+      END IF;
+
+
+      FOR r IN c_source LOOP
+         l_scanned_count :=
+            l_scanned_count + 1;
+
+
+         EXIT WHEN l_scanned_count > l_scan_max;
+
+
+         l_source.id        := r.ID;
+         l_source.file_type := r.FILE_TYPE;
+         l_source.file_name := r.FILENAME;
+         l_source.rec_state := r.REC_STATE;
+         l_source.file_body := r.FILEBODY;
+         l_source.bin_file  := r.BINFILE;
+         l_source.task_id   := r.TASKID;
+         l_source.doc_key   := r.DOCKEY;
+
+
+         ---------------------------------------------------------------------
+         -- REC_STATE=0 + existing MI journal является нарушением атомарности.
+         -- Не лечим данные молча.
+         ---------------------------------------------------------------------
+         IF find_Existing_Source(
+               p_outfile_id => l_source.id,
+               p_req_id     => l_existing_req_id,
+               p_itm_id     => l_existing_itm_id
+            )
+         THEN
+            raise_Technical_Error(
+               p_code => 'MI_0606_SOURCE_JOURNAL_INCONSISTENT',
+               p_info =>
+                     'RSD_OUTFILES remains pending but MI journal exists'
+                  || '; outfile_id='
+                  || l_source.id
+                  || '; req_id='
+                  || l_existing_req_id
+                  || '; itm_id='
+                  || l_existing_itm_id
+            );
+         END IF;
+
+
+         l_req_id       := NULL;
+         l_itm_id       := NULL;
+         l_row_ret_code := RET_FAIL;
+         l_row_ret_info := NULL;
+
+
+         create_Request_Impl(
+            p_source   => l_source,
+
+            p_req_id   => l_req_id,
+            p_itm_id   => l_itm_id,
+
+            p_ret_code => l_row_ret_code,
+            p_ret_info => l_row_ret_info
+         );
+
+
+         IF l_row_ret_code = RET_OK THEN
+            p_captured_count :=
+               p_captured_count + 1;
+
+
+            EXIT WHEN p_captured_count >= l_max_count;
+
+
+         ELSIF l_row_ret_code IN (
+                  RET_FAIL,
+                  RET_UNSUPPORTED_FILE_TYPE
+               )
+         THEN
+            /*
+               Ошибка конкретной business source row.
+
+               Она остаётся REC_STATE=0.
+               Другие документы batch продолжают обрабатываться.
+
+               CAPTURE_SCAN_MAX не позволяет бесконечно обходить
+               произвольное количество плохих записей.
+            */
+            p_skipped_count :=
+               p_skipped_count + 1;
+
+
+            l_log.warn(
+               p_message_text => 'RSD_OUTFILES row skipped',
+               p_action_code  => 'capture_skip',
+               p_details_text =>
+                  TO_CLOB(
+                        'outfile_id='
+                     || l_source.id
+                     || '; ret_code='
+                     || l_row_ret_code
+                     || '; ret_info='
+                     || l_row_ret_info
+                  )
+            );
+
+
+         ELSE
+            /*
+               Для строки, полученной самим cursor
+               WHERE REC_STATE='0' FOR UPDATE,
+               остальные RET_* означают внутреннее рассогласование.
+            */
+            raise_Technical_Error(
+               p_code => 'MI_0606_CAPTURE_UNEXPECTED_RESULT',
+               p_info =>
+                     'Unexpected create result'
+                  || '; outfile_id='
+                  || l_source.id
+                  || '; ret_code='
+                  || NVL(TO_CHAR(l_row_ret_code), '<NULL>')
+                  || '; ret_info='
+                  || NVL(l_row_ret_info, '<NULL>')
+            );
+         END IF;
+      END LOOP;
+
+
+      p_ret_code := RET_OK;
+
+      p_ret_info :=
+         SUBSTR(
+               'MI_0606 capture completed'
+            || '; captured='
+            || p_captured_count
+            || '; skipped='
+            || p_skipped_count
+            || '; scanned='
+            || LEAST(l_scanned_count, l_scan_max),
+            1,
+            4000
+         );
+
+
+      l_log.info(
+         p_message_text => 'MI_0606 capture completed',
+         p_action_code  => 'capture',
+         p_details_text =>
+            TO_CLOB(
+                  'captured='
+               || p_captured_count
+               || ', skipped='
+               || p_skipped_count
+               || ', scanned='
+               || LEAST(l_scanned_count, l_scan_max)
+            )
+      );
+
+
+      l_log.exit_f(
+         p_function_name => 'capture_Pending',
+         p_message_text  => p_ret_info
+      );
+
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         l_sqlerrm := SQLERRM;
+
+         l_rollback_ok :=
+            rollback_Savepoint(l_savepoint_name);
+
+
+         l_log.error(
+            p_message_text => 'capture_Pending failed',
+            p_action_code  => 'capture',
+            p_details_text =>
+               TO_CLOB(
+                     l_sqlerrm
+                  || CHR(10)
+                  || DBMS_UTILITY.format_error_backtrace
+                  || CHR(10)
+                  || 'captured_before_failure='
+                  || p_captured_count
+                  || CHR(10)
+                  || 'own_rollback='
+                  || MI_Utils.to_Char(l_rollback_ok)
+               )
+         );
+
+
+         RAISE;
+   END capture_Pending;
 
 END MI_0606_Api;
 /
