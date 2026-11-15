@@ -117,7 +117,7 @@ BEGIN
 
 
    ---------------------------------------------------------------------------
-   DBMS_OUTPUT.put_line('2. replay returns RET_EXISTS without RSD processing');
+   DBMS_OUTPUT.put_line('2. incomplete replay journal is rejected');
 
    l_result :=
       MI_Request_Api.create_Request(
@@ -170,6 +170,70 @@ BEGIN
    SELECT COUNT(*)
      INTO l_req_count
      FROM MI_REQ;
+
+
+   MI_ResultCtx.clear_Current;
+
+   BEGIN
+      MI_0607_Api.process_Document_Received(
+         p_original_req_uuid => NULL,
+         p_message_uuid      => l_message_uuid,
+         p_correlation_id    => l_correlation_id,
+         p_task_id           => l_task_id,
+         p_doc_type          => 'UNO',
+         p_doc_date          => SYSDATE,
+         p_file_name         => 'smoke.json',
+         p_file_body         => l_file_body,
+         p_req_id            => l_req_id,
+         p_itm_id            => l_itm_id,
+         p_base_id           => l_base_id,
+         p_file_type         => l_file_type,
+         p_parse_result      => l_parse_result,
+         p_ret_code          => l_ret_code,
+         p_ret_info          => l_ret_info
+      );
+
+      fail('incomplete replay journal was accepted');
+
+   EXCEPTION
+      WHEN MI_ResultCtx.result_Failed_Exc THEN
+         l_error_result := MI_ResultCtx.current_Result;
+
+         assert_True(
+            l_error_result.result_code = 'MI_0607_INCOMPLETE_JOURNAL',
+            'unexpected incomplete-journal result_code='
+            || NVL(l_error_result.result_code, '<NULL>')
+         );
+   END;
+
+
+   SELECT COUNT(*)
+     INTO l_count
+     FROM MI_REQ;
+
+   assert_True(
+      l_count = l_req_count,
+      'incomplete replay check changed MI_REQ'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('3. completed replay returns RET_EXISTS');
+
+   UPDATE MI_0600
+      SET IRES_CODE  = MI_Item_Result_Api.RESPONSE_FAIL,
+          ERROR_CODE = 'SMOKE_REPLAY',
+          CRES_INFO  = TO_CLOB('Completed replay fixture'),
+          TRES_TIME  = SYSTIMESTAMP
+    WHERE ITM_ID = l_existing_itm_id;
+
+   assert_True(
+      SQL%ROWCOUNT = 1,
+      'cannot complete replay fixture item'
+   );
+
 
    MI_0607_Api.process_Document_Received(
       p_original_req_uuid => NULL,

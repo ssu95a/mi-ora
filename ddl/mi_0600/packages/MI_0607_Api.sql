@@ -3,7 +3,8 @@ IS
 
    /* MI-edo. DOCUMENT_RECEIVED вида сведений 607 */
 
-   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.1.0} {14.11.2026} Sulimoff$';
+   VERSION CONSTANT VARCHAR2(100) :=
+      '$Id: {1.1.1} {15.11.2026} Sulimoff$';
 
 
    RET_FAIL               CONSTANT PLS_INTEGER := -1;
@@ -13,7 +14,10 @@ IS
    RET_DOC_TYPE_MISMATCH  CONSTANT PLS_INTEGER :=  2;
    RET_PARSING_FAILED     CONSTANT PLS_INTEGER :=  3;
 
-   -- Идемпотентный повтор уже принятого DOCUMENT_RECEIVED.
+   /*
+      Идемпотентный повтор уже завершённого DOCUMENT_RECEIVED.
+      Неполный или противоречивый journal является technical failure.
+   */
    RET_EXISTS             CONSTANT PLS_INTEGER :=  4;
 
 
@@ -70,12 +74,15 @@ END MI_0607_Api;
 CREATE OR REPLACE PACKAGE BODY MI_0607_Api
 IS
 
-   cLogger CONSTANT VARCHAR2(64) := 'mi.0607';
-   
+   cLogger CONSTANT VARCHAR2(64)        := 'mi.0607';
    cInfId  CONSTANT MI_REQ.INF_ID%TYPE := 607;
 
    /* глобальный логгер */
-   g_log CONSTANT MI_Logger_T := MI_Logger_T( p_logger_name  => cLogger, p_package_name => $$PLSQL_UNIT );
+   g_log CONSTANT MI_Logger_T :=
+      MI_Logger_T(
+         p_logger_name  => cLogger,
+         p_package_name => $$PLSQL_UNIT
+      );
 
    /* версия */
    FUNCTION get_Version
@@ -135,13 +142,18 @@ IS
              ERROR_CODE = p_error_code,
              CRES_INFO  = p_info,
              TRES_TIME  = SYSTIMESTAMP
-       WHERE 
-             ITM_ID = p_itm_id;
+       WHERE ITM_ID = p_itm_id;
 
       IF SQL%ROWCOUNT <> 1 THEN
-         raise_Technical_Error( p_code => 'MI_0607_ITEM_RESULT_NOT_UPDATED', p_info => 'MI_0600 result update failed: itm_id=' || p_itm_id || ', rows=' || SQL%ROWCOUNT );
+         raise_Technical_Error(
+            p_code => 'MI_0607_ITEM_RESULT_NOT_UPDATED',
+            p_info =>
+                  'MI_0600 result update failed: itm_id='
+               || p_itm_id
+               || ', rows='
+               || SQL%ROWCOUNT
+         );
       END IF;
-      
    END set_Item_Result;
 
 
@@ -157,6 +169,12 @@ IS
    )
       RETURN BOOLEAN
    IS
+      l_status_cd             MI_REQ.STATUS_CD%TYPE;
+      l_request_message_uuid  MI_REQ.MESSAGE_UUID%TYPE;
+      l_item_message_uuid     MI_0600.MESSAGE_UUID%TYPE;
+      l_payload_size          MI_0600.IZIP_SIZE%TYPE;
+      l_file_count            PLS_INTEGER;
+      l_item_file_count       MI_0600.IZIP_FILES_COUNT%TYPE;
    BEGIN
       p_req_id         := NULL;
       p_itm_id         := NULL;
@@ -168,17 +186,77 @@ IS
              i.ITM_ID,
              i.IRES_CODE,
              i.ERROR_CODE,
-             r.CORRELATION_ID
+             r.CORRELATION_ID,
+             r.STATUS_CD,
+             r.MESSAGE_UUID,
+             i.MESSAGE_UUID,
+             DBMS_LOB.getlength(i.BZIP_DATA),
+             i.IZIP_FILES_COUNT
         INTO p_req_id,
              p_itm_id,
              p_ires_code,
              p_error_code,
-             p_correlation_id
+             p_correlation_id,
+             l_status_cd,
+             l_request_message_uuid,
+             l_item_message_uuid,
+             l_payload_size,
+             l_item_file_count
         FROM MI_REQ r
         JOIN MI_0600 i
           ON i.REQ_ID = r.REQ_ID
        WHERE r.INF_ID = cInfId
          AND i.CZIP_NAME = p_journal_name;
+
+
+      SELECT COUNT(*)
+        INTO l_file_count
+        FROM MI_0600_F
+       WHERE ITM_ID = p_itm_id;
+
+
+      /*
+         A visible replay journal must represent a completed atomic call.
+         Returning RET_EXISTS for an incomplete journal would hide a broken
+         caller transaction or manually corrupted integration data.
+      */
+      IF l_status_cd IS NULL
+         OR l_status_cd <> MI_Request_Api.STATUS_DONE
+         OR l_request_message_uuid IS NULL
+         OR l_item_message_uuid IS NULL
+         OR LOWER(TRIM(l_request_message_uuid)) <>
+               LOWER(TRIM(l_item_message_uuid))
+         OR p_journal_name <>
+               journal_Name(l_request_message_uuid)
+         OR NVL(l_payload_size, 0) <= 0
+         OR l_item_file_count IS NULL
+         OR l_item_file_count <> 1
+         OR l_file_count <> 1
+         OR p_ires_code IS NULL
+         OR p_ires_code NOT IN (
+               MI_Item_Result_Api.RESPONSE_OK,
+               MI_Item_Result_Api.RESPONSE_FAIL
+            )
+         OR (
+               p_ires_code = MI_Item_Result_Api.RESPONSE_OK
+               AND p_error_code IS NOT NULL
+            )
+         OR (
+               p_ires_code = MI_Item_Result_Api.RESPONSE_FAIL
+               AND p_error_code IS NULL
+            )
+      THEN
+         raise_Technical_Error(
+            p_code => 'MI_0607_INCOMPLETE_JOURNAL',
+            p_info =>
+                  'Incomplete DOCUMENT_RECEIVED journal'
+               || '; req_id='
+               || p_req_id
+               || '; itm_id='
+               || p_itm_id
+         );
+      END IF;
+
 
       RETURN TRUE;
 
@@ -223,6 +301,11 @@ IS
       l_journal_name        MI_0600.CZIP_NAME%TYPE;
       l_file_size           MI_0600.IZIP_SIZE%TYPE;
 
+      l_message_uuid        MI_REQ.MESSAGE_UUID%TYPE;
+      l_original_req_uuid   MI_REQ.ORIGINAL_REQ_UUID%TYPE;
+      l_input_correlation   MI_REQ.CORRELATION_ID%TYPE;
+      l_task_id             RSD_BASES.TASKID%TYPE;
+
       l_request_result      MI_ResultCtx.exec_Result_t;
 
       l_req_id              MI_REQ.REQ_ID%TYPE;
@@ -235,7 +318,7 @@ IS
       l_file_type           RSD_BASES.FILE_TYPE%TYPE;
       l_parse_result        NUMBER;
 
-      l_err                 VARCHAR2(4000);
+      l_err                 VARCHAR2(32767);
 
       l_existing_ires       MI_0600.IRES_CODE%TYPE;
       l_existing_error      MI_0600.ERROR_CODE%TYPE;
@@ -360,6 +443,11 @@ IS
             p_action_code  => 'already_processed',
             p_details_text => TO_CLOB(p_ret_info)
          );
+
+         l_log.exit_f(
+            p_function_name => 'process_Document_Received',
+            p_message_text  => 'RET_EXISTS'
+         );
       END return_Existing;
 
 
@@ -415,15 +503,33 @@ IS
       p_ret_code     := RET_FAIL;
       p_ret_info     := NULL;
 
+
+      l_message_uuid      := TRIM(p_message_uuid);
+      l_original_req_uuid := TRIM(p_original_req_uuid);
+      l_input_correlation := TRIM(p_correlation_id);
+      l_task_id           := TRIM(p_task_id);
+      l_doc_type          := UPPER(TRIM(p_doc_type));
+      l_file_name         := TRIM(p_file_name);
+
+
       l_log.context(
          p_inf_id         => cInfId,
-         p_correlation_id => p_correlation_id
+         p_correlation_id => l_input_correlation
       );
 
-      l_log.enter_f( p_function_name => 'process_Document_Received', p_message_text  => 'task_id=' || TRIM(p_task_id) || ', file=' || l_file_name );
+
+      l_log.enter_f(
+         p_function_name => 'process_Document_Received',
+         p_message_text  =>
+               'task_id='
+            || l_task_id
+            || ', file='
+            || l_file_name
+      );
 
       /* Проверяем transport contract до любого DML. */
-      IF p_message_uuid IS NULL OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
+      IF l_message_uuid IS NULL
+         OR NOT MI_Utils.is_Uuid(l_message_uuid)
       THEN
          raise_Technical_Error(
             p_code => 'MI_0607_INVALID_MESSAGE_UUID',
@@ -432,8 +538,8 @@ IS
       END IF;
 
 
-      IF p_original_req_uuid IS NOT NULL
-         AND NOT MI_Utils.is_Uuid(TRIM(p_original_req_uuid))
+      IF l_original_req_uuid IS NOT NULL
+         AND NOT MI_Utils.is_Uuid(l_original_req_uuid)
       THEN
          raise_Technical_Error(
             p_code => 'MI_0607_INVALID_ORIGINAL_UUID',
@@ -443,8 +549,8 @@ IS
       END IF;
 
 
-      IF p_correlation_id IS NOT NULL
-         AND NOT MI_Utils.is_Uuid(TRIM(p_correlation_id))
+      IF l_input_correlation IS NOT NULL
+         AND NOT MI_Utils.is_Uuid(l_input_correlation)
       THEN
          raise_Technical_Error(
             p_code => 'MI_0607_INVALID_CORRELATION_UUID',
@@ -453,8 +559,8 @@ IS
       END IF;
 
 
-      IF p_task_id IS NULL
-         OR NOT MI_Utils.is_Uuid(TRIM(p_task_id))
+      IF l_task_id IS NULL
+         OR NOT MI_Utils.is_Uuid(l_task_id)
       THEN
          raise_Technical_Error(
             p_code => 'MI_0607_INVALID_TASK_ID',
@@ -463,12 +569,13 @@ IS
       END IF;
 
 
-      l_doc_type := UPPER(TRIM(p_doc_type));
-
       IF l_doc_type IS NULL OR l_doc_type NOT IN ('UNO', 'UPO') THEN
          raise_Technical_Error(
             p_code => 'MI_0607_INVALID_DOC_TYPE',
-            p_info => 'Unsupported DOCUMENT_RECEIVED.docType=' || NVL(l_doc_type, '<NULL>') || '; expected UNO or UPO'
+            p_info =>
+                  'Unsupported DOCUMENT_RECEIVED.docType='
+               || NVL(l_doc_type, '<NULL>')
+               || '; expected UNO or UPO'
          );
       END IF;
 
@@ -480,8 +587,6 @@ IS
          );
       END IF;
 
-
-      l_file_name := TRIM(p_file_name);
 
       IF l_file_name IS NULL THEN
          raise_Technical_Error(
@@ -507,7 +612,7 @@ IS
          );
       END IF;
 
-      l_journal_name := journal_Name(p_message_uuid);
+      l_journal_name := journal_Name(l_message_uuid);
 
       IF find_Existing(
             p_journal_name   => l_journal_name,
@@ -536,10 +641,10 @@ IS
       l_request_result :=
          MI_Request_Api.create_Request(
             p_inf_id            => cInfId,
-            p_correlation_id    => p_correlation_id,
-            p_original_req_uuid => p_original_req_uuid,
-            p_ctaxreq_id        => TRIM(p_task_id),
-            p_message_uuid      => p_message_uuid,
+            p_correlation_id    => l_input_correlation,
+            p_original_req_uuid => l_original_req_uuid,
+            p_ctaxreq_id        => l_task_id,
+            p_message_uuid      => l_message_uuid,
 
             /*
                Входящий business request уже принят транспортом.
@@ -550,6 +655,39 @@ IS
 
 
       IF MI_ResultCtx.is_Failed(l_request_result) THEN
+         /*
+            MI_Request_Api converts INSERT failures to MI_ResultCtx. If
+            MI_REQ.MESSAGE_UUID is protected by a UNIQUE key, a concurrent
+            replay is therefore not visible here as DUP_VAL_ON_INDEX.
+
+            Roll back our attempt and recheck the durable 607 journal before
+            classifying the result as a technical request-header failure.
+         */
+         l_rollback_ok := rollback_Own_Work();
+
+         IF NOT l_rollback_ok THEN
+            raise_Technical_Error(
+               p_code => 'MI_0607_ROLLBACK_FAILED',
+               p_info =>
+                  'Не удалось откатить собственную работу после ошибки MI_REQ'
+            );
+         END IF;
+
+
+         IF find_Existing(
+               p_journal_name   => l_journal_name,
+               p_req_id         => l_req_id,
+               p_itm_id         => l_itm_id,
+               p_ires_code      => l_existing_ires,
+               p_error_code     => l_existing_error,
+               p_correlation_id => l_correlation_id
+            )
+         THEN
+            return_Existing;
+            RETURN;
+         END IF;
+
+
          MI_ResultCtx.raise_Error(
             MI_ResultCtx.wrap_Exception(
                p_cause => l_request_result,
@@ -560,7 +698,10 @@ IS
       END IF;
 
 
-      l_req_id := TO_NUMBER( l_request_result.parameters('req_id') );
+      l_req_id :=
+         TO_NUMBER(
+            l_request_result.parameters('req_id')
+         );
 
       l_correlation_id := l_request_result.parameters('correlation_id');
 
@@ -605,7 +746,7 @@ IS
 
          0,
 
-         TRIM(p_message_uuid)
+         l_message_uuid
       )
       RETURNING ITM_ID
            INTO l_itm_id;
@@ -693,7 +834,11 @@ IS
          return_Business_Failure(
             p_ret_code_value => RET_DOC_TYPE_MISMATCH,
             p_error_code     => 'DOC_TYPE_MISMATCH',
-            p_info           => 'DOCUMENT_RECEIVED docType=' || l_doc_type || ', detected fileType=' || NVL(l_file_type, '<NULL>'),
+            p_info           =>
+                  'DOCUMENT_RECEIVED docType='
+               || l_doc_type
+               || ', detected fileType='
+               || NVL(l_file_type, '<NULL>'),
             p_log_message    => 'DOCUMENT_RECEIVED docType mismatch',
             p_action_code    => 'doc_type_mismatch'
          );
@@ -705,16 +850,19 @@ IS
 
       -- 5. CreateBase currently does not persist transport metadata.
       UPDATE RSD_BASES
-         SET TASKID  = TRIM(p_task_id),
+         SET TASKID  = l_task_id,
              DOCDATE = p_doc_date
-       WHERE 
-             ID = l_base_id;
+       WHERE ID = l_base_id;
 
 
       IF SQL%ROWCOUNT <> 1 THEN
          raise_Technical_Error(
             p_code => 'MI_0607_BASE_NOT_UPDATED',
-            p_info => 'RSD_BASES metadata update failed: id=' || l_base_id || ', rows=' || SQL%ROWCOUNT
+            p_info =>
+                  'RSD_BASES metadata update failed: id='
+               || l_base_id
+               || ', rows='
+               || SQL%ROWCOUNT
          );
       END IF;
 
@@ -769,13 +917,21 @@ IS
 
       p_ret_info := 'DOCUMENT_RECEIVED processed successfully';
 
-      l_log.info (
+      l_log.info(
          p_message_text => 'DOCUMENT_RECEIVED processed',
          p_action_code  => 'processed',
-         p_details_text => TO_CLOB( 'base_id=' || l_base_id  || ', file_type=' || l_file_type || ', parse_result=' || l_parse_result )
+         p_details_text =>
+            TO_CLOB(
+                  'base_id='
+               || l_base_id
+               || ', file_type='
+               || l_file_type
+               || ', parse_result='
+               || l_parse_result
+            )
       );
 
-      l_log.exit_f (
+      l_log.exit_f(
          p_function_name => 'process_Document_Received',
          p_message_text  => 'OK'
       );
@@ -803,15 +959,19 @@ IS
          END IF;
 
 
-         IF INSTR( UPPER(l_sqlerrm), 'UK_MI_0600__CZIP_NAME' ) > 0
-            AND find_Existing(
-                   p_journal_name   => l_journal_name,
-                   p_req_id         => l_req_id,
-                   p_itm_id         => l_itm_id,
-                   p_ires_code      => l_existing_ires,
-                   p_error_code     => l_existing_error,
-                   p_correlation_id => l_correlation_id
-                )
+         /*
+            Do not depend on the physical constraint/index name contained in
+            ORA-00001. After rollback, the durable journal is the source of
+            truth: if it appeared concurrently, this is a normal replay.
+         */
+         IF find_Existing(
+               p_journal_name   => l_journal_name,
+               p_req_id         => l_req_id,
+               p_itm_id         => l_itm_id,
+               p_ires_code      => l_existing_ires,
+               p_error_code     => l_existing_error,
+               p_correlation_id => l_correlation_id
+            )
          THEN
             return_Existing;
             RETURN;
@@ -842,11 +1002,18 @@ IS
          l_log.error(
             p_message_text => 'process_Document_Received failed',
             p_action_code  => 'process',
-            p_details_text => TO_CLOB( l_sqlerrm || CHR(10) || DBMS_UTILITY.format_error_backtrace  || CHR(10) || 'own_rollback=' || MI_Utils.to_Char(l_rollback_ok) )
+            p_details_text =>
+               TO_CLOB(
+                     l_sqlerrm
+                  || CHR(10)
+                  || DBMS_UTILITY.format_error_backtrace
+                  || CHR(10)
+                  || 'own_rollback='
+                  || MI_Utils.to_Char(l_rollback_ok)
+               )
          );
 
          RAISE;
-         
    END process_Document_Received;
 
 
