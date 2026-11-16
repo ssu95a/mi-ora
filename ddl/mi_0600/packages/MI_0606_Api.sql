@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_0606_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.1.1} {15.11.2026} Sulimoff$';
+      '$Id: {1.2.0} {16.11.2026} Sulimoff$';
 
 
    ---------------------------------------------------------------------------
@@ -37,12 +37,16 @@ IS
          одному MI_0600 item;
          одному SEND_DOCUMENT.
 
+      TASKID является повторяемым correlation identifier.
+      Идентичность конкретного файла задаёт DOCKEY.
+      Payload берётся только из FILEBODY; BINFILE не используется.
+
       Процедура:
          - блокирует RSD_OUTFILES;
          - создаёт MI_REQ со STATUS_NEW;
          - создаёт MI_0600;
          - сохраняет исходное имя в MI_0600_F;
-         - переводит RSD_OUTFILES.REC_STATE из '0' в '1'.
+         - переводит RSD_OUTFILES.REC_STATE из '0' в '2'.
 
       COMMIT процедура не выполняет.
    */
@@ -118,6 +122,9 @@ IS
       ERROR / VALIDATION_ERROR считаются терминальным business outcome:
          item -> FAIL;
          request -> DONE.
+
+      Переход RSD_OUTFILES.REC_STATE из 2 в 5 здесь пока не выполняется:
+      terminal semantics source row требует отдельного подтверждения.
    */
    PROCEDURE apply_Document_Submitted (
       p_request_uuid   IN  MI_REQ.EXTERNAL_UUID%TYPE,
@@ -146,6 +153,8 @@ IS
       ERROR_STATE / ERROR_INTERNAL / ERROR_PROCESSING:
          item -> FAIL;
          request -> DONE.
+
+      Переход RSD_OUTFILES.REC_STATE из 2 в 5 пока не выполняется.
    */
    PROCEDURE apply_Document_Status (
       p_message_uuid   IN  MI_REQ.MESSAGE_UUID%TYPE,
@@ -172,6 +181,8 @@ IS
          request -> DONE.
 
       Это не MI_REQ.STATUS_ERROR.
+
+      Переход RSD_OUTFILES.REC_STATE из 2 в 5 пока не выполняется.
    */
    PROCEDURE apply_Fault (
       p_request_uuid   IN  MI_REQ.EXTERNAL_UUID%TYPE,
@@ -210,7 +221,6 @@ IS
       file_name  RSD_OUTFILES.FILENAME%TYPE,
       rec_state  RSD_OUTFILES.REC_STATE%TYPE,
       file_body  RSD_OUTFILES.FILEBODY%TYPE,
-      bin_file   RSD_OUTFILES.BINFILE%TYPE,
       task_id    RSD_OUTFILES.TASKID%TYPE,
       doc_key    RSD_OUTFILES.DOCKEY%TYPE
    );
@@ -904,7 +914,10 @@ IS
       END IF;
 
 
-      -- Business result получен, integration lifecycle завершён.
+      /*
+         MI request/item lifecycle завершён. RSD_OUTFILES.REC_STATE=5 здесь
+         намеренно не устанавливается до подтверждения terminal source rules.
+      */
       l_transition := MI_Request_Api.to_Success(p_req_id);
 
 
@@ -1102,7 +1115,7 @@ IS
       END IF;
 
 
-      -- ERROR / VALIDATION_ERROR пока считаются terminal business outcome.
+      -- ERROR / VALIDATION_ERROR: текущий provisional terminal contract.
       apply_Terminal_Result(
          p_req_id        => p_req_id,
          p_itm_id        => p_itm_id,
@@ -1675,12 +1688,7 @@ IS
       ------------------------------------------------------------------------
       -- Payload snapshot.
       ------------------------------------------------------------------------
-      IF p_source.bin_file IS NOT NULL
-         AND DBMS_LOB.getlength(p_source.bin_file) > 0
-      THEN
-         l_payload := p_source.bin_file;
-
-      ELSIF p_source.file_body IS NOT NULL
+      IF p_source.file_body IS NOT NULL
          AND DBMS_LOB.getlength(p_source.file_body) > 0
       THEN
          l_payload :=
@@ -1692,7 +1700,7 @@ IS
          p_ret_code := RET_FAIL;
 
          p_ret_info :=
-               'RSD_OUTFILES contains no document body; id='
+               'RSD_OUTFILES.FILEBODY is empty; id='
             || p_source.id;
 
          RETURN;
@@ -1787,7 +1795,7 @@ IS
       -- Source становится captured только после создания полного MI journal.
       ------------------------------------------------------------------------
       UPDATE RSD_OUTFILES
-         SET REC_STATE = '1'
+         SET REC_STATE = '2'
        WHERE ID = p_source.id
          AND REC_STATE = '0';
 
@@ -1880,32 +1888,6 @@ IS
       END IF;
 
 
-      ------------------------------------------------------------------------
-      -- Normal idempotent replay.
-      ------------------------------------------------------------------------
-      IF find_Existing_Source(
-            p_outfile_id => p_outfile_id,
-            p_req_id     => l_existing_req,
-            p_itm_id     => l_existing_itm
-         )
-      THEN
-         p_req_id   := l_existing_req;
-         p_itm_id   := l_existing_itm;
-         p_ret_code := RET_EXISTS;
-
-         p_ret_info :=
-               'RSD_OUTFILES already registered'
-            || '; id='
-            || p_outfile_id
-            || '; req_id='
-            || l_existing_req
-            || '; itm_id='
-            || l_existing_itm;
-
-         RETURN;
-      END IF;
-
-
       DCL.SavePoint(l_savepoint_name);
 
       IF l_savepoint_name IS NULL THEN
@@ -1925,7 +1907,6 @@ IS
                 FILENAME,
                 REC_STATE,
                 FILEBODY,
-                BINFILE,
                 TASKID,
                 DOCKEY
            INTO l_source.id,
@@ -1933,7 +1914,6 @@ IS
                 l_source.file_name,
                 l_source.rec_state,
                 l_source.file_body,
-                l_source.bin_file,
                 l_source.task_id,
                 l_source.doc_key
            FROM RSD_OUTFILES
@@ -1958,8 +1938,9 @@ IS
 
 
       ------------------------------------------------------------------------
-      -- The first idempotency check is only a fast path. Another session may
-      -- finish the same source while this session waits for FOR UPDATE.
+      -- The source row is locked before replay classification. This prevents
+      -- a REC_STATE=0 row with an existing journal from being silently
+      -- accepted as an ordinary replay.
       ------------------------------------------------------------------------
       IF find_Existing_Source(
             p_outfile_id => p_outfile_id,
@@ -1967,6 +1948,24 @@ IS
             p_itm_id     => l_existing_itm
          )
       THEN
+         IF l_source.rec_state IS NULL
+            OR TRIM(l_source.rec_state) NOT IN ('2', '5')
+         THEN
+            raise_Technical_Error(
+               p_code => 'MI_0606_SOURCE_JOURNAL_INCONSISTENT',
+               p_info =>
+                     'MI journal exists for source with invalid REC_STATE'
+                  || '; outfile_id='
+                  || p_outfile_id
+                  || '; rec_state='
+                  || NVL(TRIM(l_source.rec_state), '<NULL>')
+                  || '; req_id='
+                  || l_existing_req
+                  || '; itm_id='
+                  || l_existing_itm
+            );
+         END IF;
+
          rollback_Or_Raise(
             p_name => l_savepoint_name,
             p_code => 'MI_0606_CREATE_ROLLBACK_FAILED',
@@ -1987,6 +1986,19 @@ IS
             || l_existing_itm;
 
          RETURN;
+      END IF;
+
+
+      IF TRIM(l_source.rec_state) IN ('2', '5') THEN
+         raise_Technical_Error(
+            p_code => 'MI_0606_SOURCE_JOURNAL_INCONSISTENT',
+            p_info =>
+                  'Captured/completed source has no MI journal'
+               || '; outfile_id='
+               || p_outfile_id
+               || '; rec_state='
+               || TRIM(l_source.rec_state)
+         );
       END IF;
 
 
@@ -2087,7 +2099,6 @@ IS
                 FILENAME,
                 REC_STATE,
                 FILEBODY,
-                BINFILE,
                 TASKID,
                 DOCKEY
            FROM RSD_OUTFILES
@@ -2184,7 +2195,6 @@ IS
                l_source.file_name,
                l_source.rec_state,
                l_source.file_body,
-               l_source.bin_file,
                l_source.task_id,
                l_source.doc_key;
 

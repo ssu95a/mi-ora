@@ -4,7 +4,7 @@ IS
    /* MI-edo. DOCUMENT_RECEIVED вида сведений 607 */
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.2.0} {15.11.2026} Sulimoff$';
+      '$Id: {1.2.1} {16.11.2026} Sulimoff$';
 
 
    RET_FAIL               CONSTANT PLS_INTEGER := -1;
@@ -44,6 +44,9 @@ IS
       savepoint, но MI_REQ / MI_0600 остаются в текущей транзакции.
 
       При unexpected exception откатывается вся работа этой процедуры.
+
+      При успешном RD_PKG.Parsing параметр p_parse_result содержит
+      RSD_OUTFILES.ID созданного исходящего документа.
 
       COMMIT процедура не выполняет.
    */
@@ -465,7 +468,7 @@ IS
 
       l_base_id             RSD_BASES.ID%TYPE;
       l_file_type           RSD_BASES.FILE_TYPE%TYPE;
-      l_parse_result        NUMBER;
+      l_parse_result        RSD_OUTFILES.ID%TYPE;
 
       l_err                 VARCHAR2(32767);
 
@@ -949,7 +952,7 @@ IS
 
 
       -- CreateBase business failure.
-      IF NVL(l_base_id, 0) = 0 THEN
+      IF l_base_id IS NULL THEN
          return_Business_Failure(
             p_ret_code_value => RET_CREATE_BASE_FAILED,
             p_error_code     => 'CREATE_BASE_FAILED',
@@ -1004,7 +1007,7 @@ IS
       END IF;
 
 
-      -- 6. Run RSD business processing.
+      -- 6. Run RSD business processing; result is created RSD_OUTFILES.ID.
       l_err          := NULL;
       l_parse_result := NULL;
 
