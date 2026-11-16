@@ -23,6 +23,7 @@ DECLARE
    l_ret_code      NUMBER;
    l_ret_info      VARCHAR2(4000);
    l_argument_cnt  PLS_INTEGER;
+   l_source_cnt    PLS_INTEGER;
 
 
    PROCEDURE fail (
@@ -212,6 +213,54 @@ BEGIN
             || NVL(l_error_result.result_code, '<NULL>')
          );
    END;
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('7. capture uses REC_STATE 0 -> 2');
+
+   SELECT COUNT(*)
+     INTO l_source_cnt
+     FROM USER_SOURCE
+    WHERE NAME = 'MI_0606_API'
+      AND TYPE = 'PACKAGE BODY'
+      AND UPPER(TEXT) LIKE '%SET REC_STATE = ''2''%';
+
+   assert_True(
+      l_source_cnt = 1,
+      'compiled package does not contain exactly one REC_STATE=2 transition'
+   );
+
+   SELECT COUNT(*)
+     INTO l_source_cnt
+     FROM USER_SOURCE
+    WHERE NAME = 'MI_0606_API'
+      AND TYPE = 'PACKAGE BODY'
+      AND UPPER(TEXT) LIKE '%SET REC_STATE = ''1''%';
+
+   assert_True(
+      l_source_cnt = 0,
+      'compiled package still contains REC_STATE=1 transition'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('8. capture does not read BINFILE');
+
+   SELECT COUNT(*)
+     INTO l_source_cnt
+     FROM USER_SOURCE
+    WHERE NAME = 'MI_0606_API'
+      AND TYPE = 'PACKAGE BODY'
+      AND UPPER(TEXT) LIKE '%BINFILE%';
+
+   assert_True(
+      l_source_cnt = 0,
+      'compiled package still depends on RSD_OUTFILES.BINFILE'
+   );
 
    DBMS_OUTPUT.put_line('   OK');
    DBMS_OUTPUT.put_line('MI_0606_Api smoke test passed');
