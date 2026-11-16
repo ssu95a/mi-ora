@@ -174,9 +174,15 @@ BEGIN
 
 EXCEPTION
    WHEN OTHERS THEN
-      IF DBMS_LOB.fileisopen(l_bfile) = 1 THEN
-         DBMS_LOB.fileclose(l_bfile);
-      END IF;
+      -- Cleanup must not mask the original business/Oracle exception.
+      BEGIN
+         IF l_bfile IS NOT NULL AND DBMS_LOB.fileisopen(l_bfile) = 1 THEN
+            DBMS_LOB.fileclose(l_bfile);
+         END IF;
+      EXCEPTION
+         WHEN OTHERS THEN
+            DBMS_OUTPUT.put_line('WARNING: BFILE cleanup failed: ' || SQLERRM);
+      END;
 
       BEGIN
          ROLLBACK TO mi_0607_real_smoke;
@@ -185,9 +191,14 @@ EXCEPTION
             DBMS_OUTPUT.put_line('WARNING: ROLLBACK TO SAVEPOINT FAILED: ' || SQLERRM);
       END;
 
-      IF DBMS_LOB.istemporary(l_body) = 1 THEN
-         DBMS_LOB.freetemporary(l_body);
-      END IF;
+      BEGIN
+         IF l_body IS NOT NULL AND DBMS_LOB.istemporary(l_body) = 1 THEN
+            DBMS_LOB.freetemporary(l_body);
+         END IF;
+      EXCEPTION
+         WHEN OTHERS THEN
+            DBMS_OUTPUT.put_line('WARNING: temporary BLOB cleanup failed: ' || SQLERRM);
+      END;
 
       RAISE;
 END;
