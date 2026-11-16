@@ -40,15 +40,15 @@ IS
       p_izip_files_count      IN MI_0600.IZIP_FILES_COUNT%TYPE,
       p_file_names            IN SYS.ODCIVARCHAR2LIST,
 
-      p_original_req_uuid     IN MI_REQ.ORIGINAL_REQ_UUID%TYPE,
-      p_message_uuid          IN MI_REQ.MESSAGE_UUID%TYPE,
-      p_ctaxreq_id            IN MI_REQ.CTAXREQ_ID%TYPE,
-      p_icreate_type          IN MI_0600.ICREATE_TYPE%TYPE,
-
       p_req_id                OUT MI_REQ.REQ_ID%TYPE,
       p_itm_id                OUT MI_0600.ITM_ID%TYPE,
       p_ret_code              OUT NUMBER,
-      p_ret_info              OUT VARCHAR2
+      p_ret_info              OUT VARCHAR2,
+
+      p_original_req_uuid     IN MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_message_uuid          IN MI_REQ.MESSAGE_UUID%TYPE,
+      p_ctaxreq_id            IN MI_REQ.CTAXREQ_ID%TYPE,
+      p_icreate_type          IN MI_0600.ICREATE_TYPE%TYPE
    );
 
 
@@ -780,15 +780,15 @@ IS
       p_izip_files_count      IN MI_0600.IZIP_FILES_COUNT%TYPE,
       p_file_names            IN SYS.ODCIVARCHAR2LIST,
 
-      p_original_req_uuid     IN MI_REQ.ORIGINAL_REQ_UUID%TYPE,
-      p_message_uuid          IN MI_REQ.MESSAGE_UUID%TYPE,
-      p_ctaxreq_id            IN MI_REQ.CTAXREQ_ID%TYPE,
-      p_icreate_type          IN MI_0600.ICREATE_TYPE%TYPE,
-
       p_req_id                OUT MI_REQ.REQ_ID%TYPE,
       p_itm_id                OUT MI_0600.ITM_ID%TYPE,
       p_ret_code              OUT NUMBER,
-      p_ret_info              OUT VARCHAR2
+      p_ret_info              OUT VARCHAR2,
+
+      p_original_req_uuid     IN MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_message_uuid          IN MI_REQ.MESSAGE_UUID%TYPE,
+      p_ctaxreq_id            IN MI_REQ.CTAXREQ_ID%TYPE,
+      p_icreate_type          IN MI_0600.ICREATE_TYPE%TYPE
    )
    IS
       l_result MI_ResultCtx.exec_Result_t;
