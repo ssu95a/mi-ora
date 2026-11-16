@@ -108,11 +108,15 @@ END MI_0600_Api;
 CREATE OR REPLACE PACKAGE BODY MI_0600_Api
 IS
 
+   /* logger Id */
    cLogger CONSTANT VARCHAR2(64) := 'mi.0600';
 
-   -- глобальный логгер
+
+   /* */
    g_log CONSTANT MI_Logger_T := MI_Logger_T( p_logger_name  => cLogger, p_package_name => $$PLSQL_UNIT );
 
+   
+   /* */
    e_Duplicate_Archive EXCEPTION;
    PRAGMA EXCEPTION_INIT(e_Duplicate_Archive, -20022);
 
@@ -124,6 +128,7 @@ IS
    BEGIN
       RETURN VERSION;
    END get_Version;
+
 
    /* Список поддерживаемых ВС */
    FUNCTION is_Supported_Inf (
@@ -194,6 +199,7 @@ IS
       END IF;
 
       RETURN l_result;
+      
    END success_Result;
 
 
@@ -227,6 +233,7 @@ IS
       END IF;
 
       RETURN l_result;
+      
    END failure_Result;
 
 
@@ -264,24 +271,14 @@ IS
          END IF;
       END IF;
 
-      p_ret_info :=
-         SUBSTR(
-               NVL(p_result.result_code, '<NO_RESULT_CODE>')
-            || ': '
-            || NVL(p_result.result_info, '<NO_RESULT_INFO>')
-            || CASE
-                  WHEN p_result.cause_code IS NOT NULL
-                     OR p_result.cause_info IS NOT NULL
-                  THEN
-                        '; cause='
-                     || NVL(p_result.cause_code, '<NO_CAUSE_CODE>')
-                     || ': '
-                     || NVL(p_result.cause_info, '<NO_CAUSE_INFO>')
-                  ELSE NULL
-               END,
-            1,
-            4000
-         );
+      p_ret_info := SUBSTR( NVL(p_result.result_code, '<NO_RESULT_CODE>') || ': ' || NVL(p_result.result_info, '<NO_RESULT_INFO>') 
+                            || CASE WHEN p_result.cause_code IS NOT NULL OR p_result.cause_info IS NOT NULL THEN '; cause='
+                            || NVL( p_result.cause_code, '<NO_CAUSE_CODE>' )
+                            || ': '
+                            || NVL( p_result.cause_info, '<NO_CAUSE_INFO>')
+                            ELSE NULL
+                        END, 1, 4000 );
+
    END export_Result;
 
 
@@ -319,6 +316,7 @@ IS
                WHEN DUP_VAL_ON_INDEX THEN
                   NULL;
             END;
+            
          END IF;
 
          l_index := p_file_names.NEXT(l_index);
@@ -328,7 +326,7 @@ IS
    EXCEPTION
       /* Пропущенная коллекция SQL атомарно равна NULL */
       WHEN COLLECTION_IS_NULL THEN
-         NULL;
+           NULL;
    END insert_File_Names;
 
 
@@ -340,6 +338,7 @@ IS
    IS
       l_exists PLS_INTEGER;
    BEGIN
+   
       SELECT 1
         INTO l_exists
         FROM MI_0600
@@ -359,11 +358,7 @@ IS
    )
    IS
    BEGIN
-      RAISE_APPLICATION_ERROR(
-         ERR_DUPLICATE_ARCHIVE,
-         'MI_0600_DUPLICATE_ARCHIVE: archive already registered: '
-         || p_czip_name
-      );
+      RAISE_APPLICATION_ERROR( ERR_DUPLICATE_ARCHIVE, 'MI_0600_DUPLICATE_ARCHIVE: archive already registered: ' || p_czip_name );
    END raise_Duplicate_Archive;
 
 
@@ -404,7 +399,7 @@ IS
 
       l_log                MI_Logger_T := g_log;
 
-      
+      /* */
       PROCEDURE rollback_Own_Work
       IS
          l_name         DCL.T_Name;
@@ -416,13 +411,15 @@ IS
             l_name           := l_savepoint_name;
             l_savepoint_name := NULL;
 
-            l_rolled_back := DCL.RollBack(l_name);
+            l_rolled_back    := DCL.RollBack(l_name);
 
             IF NOT l_rolled_back THEN
-               l_log.warn(
+            
+               l_log.warn (
                   p_message_text => 'DCL rollback was not performed',
                   p_action_code  => 'rollback_skipped'
                );
+               
             END IF;
             
          END IF;
@@ -430,6 +427,7 @@ IS
       END rollback_Own_Work;
 
 
+      /* */
       FUNCTION find_Responder_Duplicate
          RETURN BOOLEAN
       IS
@@ -478,7 +476,7 @@ IS
                l_item_uuid := NULL;
          END;
 
-         l_log.context(
+         l_log.context (
             p_inf_id         => p_inf_id,
             p_req_id         => l_req_id,
             p_itm_id         => l_itm_id,
