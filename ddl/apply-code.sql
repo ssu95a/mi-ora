@@ -65,6 +65,15 @@ SHOW ERRORS PACKAGE BODY MI_Item_Result_Api
 
 
 PROMPT ------------------------------------------------------------
+PROMPT Multi-Bus request preparation
+PROMPT ------------------------------------------------------------
+
+@ddl/mbus/packages/MI_mbus.sql
+SHOW ERRORS PACKAGE MI_mbus
+SHOW ERRORS PACKAGE BODY MI_mbus
+
+
+PROMPT ------------------------------------------------------------
 PROMPT Business API packages
 PROMPT ------------------------------------------------------------
 

@@ -1,0 +1,529 @@
+SET SERVEROUTPUT ON SIZE UNLIMITED
+SET FEEDBACK ON
+SET VERIFY OFF
+SET DEFINE OFF
+
+PROMPT ============================================================
+PROMPT MI_mbus smoke test
+PROMPT ============================================================
+
+DECLARE
+   l_result          MI_ResultCtx.exec_Result_t;
+   l_create_result   MI_ResultCtx.exec_Result_t;
+
+   l_req_id          MI_REQ.REQ_ID%TYPE;
+   l_rsp_req_id      MI_REQ.REQ_ID%TYPE;
+   l_rsp_id          MI_RSP.RSP_ID%TYPE;
+
+   l_missing_req_id  MI_REQ.REQ_ID%TYPE;
+   l_missing_rsp_id  MI_RSP.RSP_ID%TYPE;
+
+   l_status_before   NUMBER;
+   l_status_after    NUMBER;
+   l_count           PLS_INTEGER;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE fail (
+      p_message IN VARCHAR2
+   )
+   IS
+   BEGIN
+      RAISE_APPLICATION_ERROR(
+         -20990,
+         'MI_mbus smoke test failed: ' || p_message
+      );
+   END fail;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE assert_True (
+      p_condition IN BOOLEAN,
+      p_message   IN VARCHAR2
+   )
+   IS
+   BEGIN
+      IF p_condition IS NULL OR NOT p_condition THEN
+         fail(p_message);
+      END IF;
+   END assert_True;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE assert_Code (
+      p_result         IN MI_ResultCtx.exec_Result_t,
+      p_expected_code  IN VARCHAR2,
+      p_expected_ok    IN BOOLEAN,
+      p_context        IN VARCHAR2
+   )
+   IS
+   BEGIN
+      IF p_expected_ok THEN
+         assert_True(
+            MI_ResultCtx.is_Success(p_result),
+            p_context
+            || ': expected success for code='
+            || NVL(p_result.result_code, '<NULL>')
+         );
+      ELSE
+         assert_True(
+            MI_ResultCtx.is_Failed(p_result),
+            p_context
+            || ': expected failure for code='
+            || NVL(p_result.result_code, '<NULL>')
+         );
+      END IF;
+
+      assert_True(
+         p_result.result_code = p_expected_code,
+         p_context
+         || ': expected code='
+         || p_expected_code
+         || ', actual='
+         || NVL(p_result.result_code, '<NULL>')
+         || ', info='
+         || NVL(p_result.result_info, '<NULL>')
+      );
+   END assert_Code;
+
+
+   ---------------------------------------------------------------------------
+   FUNCTION result_Id (
+      p_result  IN MI_ResultCtx.exec_Result_t,
+      p_name    IN VARCHAR2
+   )
+      RETURN NUMBER
+   IS
+   BEGIN
+      IF NOT p_result.parameters.EXISTS(p_name) THEN
+         fail('result parameter is absent: ' || p_name);
+      END IF;
+
+      RETURN TO_NUMBER(p_result.parameters(p_name));
+   END result_Id;
+
+
+BEGIN
+   SAVEPOINT before_mi_mbus_smoke;
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('1. Required test information type exists');
+
+   SELECT COUNT(*)
+     INTO l_count
+     FROM MI_INF
+    WHERE INF_ID = 601;
+
+   assert_True(l_count = 1, 'MI_INF does not contain required INF_ID=601');
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('2. Request not found is a structured failure');
+
+   SELECT NVL(MAX(REQ_ID), 0) + 1000000
+     INTO l_missing_req_id
+     FROM MI_REQ;
+
+   MI_mbus.send_Request(
+      p_req_id => l_missing_req_id,
+      p_result => l_result
+   );
+
+   assert_Code(
+      l_result,
+      'MI_MBUS.SEND_REQUEST#REQUEST_NOT_FOUND_IN_X',
+      FALSE,
+      'missing request'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line(
+      '3. NEW request is prepared, transport is unsupported, status unchanged'
+   );
+
+   l_create_result :=
+      MI_Request_Api.create_Request(
+         p_inf_id    => 601,
+         p_status_cd => MI_Request_Api.STATUS_NEW
+      );
+
+   assert_True(
+      MI_ResultCtx.is_Success(l_create_result),
+      'create request failed: '
+      || NVL(l_create_result.result_code, '<NULL>')
+      || ' / '
+      || NVL(l_create_result.result_info, '<NULL>')
+   );
+
+   l_req_id := result_Id(l_create_result, 'req_id');
+
+   SELECT STATUS_CD
+     INTO l_status_before
+     FROM MI_REQ
+    WHERE REQ_ID = l_req_id;
+
+   MI_mbus.send_Request(
+      p_req_id => l_req_id,
+      p_result => l_result
+   );
+
+   assert_Code(
+      l_result,
+      MI_mbus.RESULT_MBUS_NOT_IMPLEMENTED,
+      FALSE,
+      'prepared request'
+   );
+   assert_True(
+      l_result.parameters.EXISTS('request_prepared'),
+      'request_prepared marker is absent'
+   );
+   assert_True(
+      l_result.parameters('request_prepared') = '1',
+      'request_prepared marker is invalid'
+   );
+   assert_True(
+      l_result.parameters.EXISTS('request_size')
+      AND TO_NUMBER(l_result.parameters('request_size')) > 0,
+      'request_size is absent or invalid'
+   );
+
+   SELECT STATUS_CD
+     INTO l_status_after
+     FROM MI_REQ
+    WHERE REQ_ID = l_req_id;
+
+   assert_True(
+      l_status_before = MI_Request_Api.STATUS_NEW,
+      'request was not created in NEW'
+   );
+   assert_True(
+      l_status_after = l_status_before,
+      'send_Request changed request status'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('4. BUSY request is an idempotent success');
+
+   l_create_result := MI_Request_Api.take_For_Proc(l_req_id);
+   assert_True(
+      MI_ResultCtx.is_Success(l_create_result),
+      'take_For_Proc failed: ' || NVL(l_create_result.result_info, '<NULL>')
+   );
+
+   MI_mbus.send_Request(
+      p_req_id => l_req_id,
+      p_result => l_result
+   );
+
+   assert_Code(
+      l_result,
+      MI_mbus.RESULT_ALREADY_IN_PROGRESS,
+      TRUE,
+      'BUSY request'
+   );
+
+   SELECT STATUS_CD
+     INTO l_status_after
+     FROM MI_REQ
+    WHERE REQ_ID = l_req_id;
+
+   assert_True(
+      l_status_after = MI_Request_Api.STATUS_BUSY,
+      'idempotent send_Request changed BUSY status'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('5. Response not found is a structured failure');
+
+   SELECT NVL(MAX(RSP_ID), 0) + 1000000
+     INTO l_missing_rsp_id
+     FROM MI_RSP;
+
+   MI_mbus.send_Response(
+      p_rsp_id => l_missing_rsp_id,
+      p_result => l_result
+   );
+
+   assert_Code(
+      l_result,
+      'MI_MBUS.SEND_RESPONSE#RESPONSE_NOT_FOUND',
+      FALSE,
+      'missing response'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('6. NEW response is rejected with BAD_STATUS');
+
+   l_create_result :=
+      MI_Request_Api.create_Request(
+         p_inf_id            => 601,
+         p_original_req_uuid => MI_Utils.uuid_V7,
+         p_status_cd         => MI_Request_Api.STATUS_DONE
+      );
+
+   assert_True(
+      MI_ResultCtx.is_Success(l_create_result),
+      'create response request failed: '
+      || NVL(l_create_result.result_info, '<NULL>')
+   );
+
+   l_rsp_req_id := result_Id(l_create_result, 'req_id');
+
+   l_create_result :=
+      MI_Response_Api.create_Response(
+         p_req_id      => l_rsp_req_id,
+         p_itm_id      => 1,
+         p_category_cd => 'SMOKE',
+         p_result_code => 'SMOKE_OK'
+      );
+
+   assert_True(
+      MI_ResultCtx.is_Success(l_create_result),
+      'create response failed: '
+      || NVL(l_create_result.result_info, '<NULL>')
+   );
+
+   l_rsp_id := result_Id(l_create_result, 'rsp_id');
+
+   MI_mbus.send_Response(
+      p_rsp_id => l_rsp_id,
+      p_result => l_result
+   );
+
+   assert_Code(
+      l_result,
+      'MI_MBUS.SEND_RESPONSE#BAD_STATUS',
+      FALSE,
+      'NEW response'
+   );
+
+   SELECT STATUS_CD
+     INTO l_status_after
+     FROM MI_RSP
+    WHERE RSP_ID = l_rsp_id;
+
+   assert_True(
+      l_status_after = MI_Response_Api.STATUS_NEW,
+      'bad-status send_Response changed response status'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line(
+      '7. READY response is prepared, transport is unsupported, status unchanged'
+   );
+
+   l_create_result := MI_Response_Api.to_Ready(l_rsp_id);
+   assert_True(
+      MI_ResultCtx.is_Success(l_create_result),
+      'to_Ready failed: ' || NVL(l_create_result.result_info, '<NULL>')
+   );
+
+   SELECT STATUS_CD
+     INTO l_status_before
+     FROM MI_RSP
+    WHERE RSP_ID = l_rsp_id;
+
+   MI_mbus.send_Response(
+      p_rsp_id => l_rsp_id,
+      p_result => l_result
+   );
+
+   assert_Code(
+      l_result,
+      MI_mbus.RESULT_MBUS_NOT_IMPLEMENTED,
+      FALSE,
+      'READY response'
+   );
+   assert_True(
+      l_result.parameters.EXISTS('request_prepared')
+      AND l_result.parameters('request_prepared') = '1',
+      'response request was not prepared'
+   );
+
+   SELECT STATUS_CD
+     INTO l_status_after
+     FROM MI_RSP
+    WHERE RSP_ID = l_rsp_id;
+
+   assert_True(
+      l_status_before = MI_Response_Api.STATUS_READY,
+      'response was not READY before send'
+   );
+   assert_True(
+      l_status_after = l_status_before,
+      'send_Response changed READY status'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('8. SENT response is an idempotent success');
+
+   l_create_result := MI_Response_Api.to_Sent(l_rsp_id);
+   assert_True(
+      MI_ResultCtx.is_Success(l_create_result),
+      'to_Sent failed: ' || NVL(l_create_result.result_info, '<NULL>')
+   );
+
+   MI_mbus.send_Response(
+      p_rsp_id => l_rsp_id,
+      p_result => l_result
+   );
+
+   assert_Code(
+      l_result,
+      MI_mbus.RESULT_ALREADY_SENT,
+      TRUE,
+      'SENT response'
+   );
+
+   SELECT STATUS_CD
+     INTO l_status_after
+     FROM MI_RSP
+    WHERE RSP_ID = l_rsp_id;
+
+   assert_True(
+      l_status_after = MI_Response_Api.STATUS_SENT,
+      'idempotent send_Response changed SENT status'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('9. Direct command rejects invalid inputs');
+
+   MI_mbus.send_Command(
+      p_result => l_result,
+      p_action => '   '
+   );
+   assert_Code(
+      l_result,
+      'MI_MBUS.SEND_COMMAND#ACTION_REQUIRED',
+      FALSE,
+      'blank action'
+   );
+
+   MI_mbus.send_Command(
+      p_result => l_result,
+      p_action => 'bad action'
+   );
+   assert_Code(
+      l_result,
+      'MI_MBUS.SEND_COMMAND#INVALID_ACTION',
+      FALSE,
+      'action with whitespace'
+   );
+
+   MI_mbus.send_Command(
+      p_result     => l_result,
+      p_action     => 'refresh',
+      p_parameters => '[1]'
+   );
+   assert_Code(
+      l_result,
+      'MI_MBUS.SEND_COMMAND#INVALID_PARAMETERS',
+      FALSE,
+      'JSON array parameters'
+   );
+
+   MI_mbus.send_Command(
+      p_result => l_result,
+      p_action => 'refresh',
+      p_inf_id => -1
+   );
+   assert_Code(
+      l_result,
+      'MI_MBUS.SEND_COMMAND#INVALID_INF_ID',
+      FALSE,
+      'negative inf_id'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line(
+      '10. Valid direct command is escaped/prepared and transport is unsupported'
+   );
+
+   MI_mbus.send_Command(
+      p_result     => l_result,
+      p_action     => 'refresh',
+      p_inf_id     => 601,
+      p_req_id     => l_req_id,
+      p_parameters => '{"secret":"<&"}'
+   );
+
+   assert_Code(
+      l_result,
+      MI_mbus.RESULT_MBUS_NOT_IMPLEMENTED,
+      FALSE,
+      'valid direct command'
+   );
+   assert_True(
+      l_result.parameters.EXISTS('request_prepared')
+      AND l_result.parameters('request_prepared') = '1',
+      'direct command was not prepared'
+   );
+   assert_True(
+      l_result.parameters.EXISTS('scope')
+      AND l_result.parameters('scope') = 'REQUEST',
+      'direct command scope is not REQUEST'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('11. NULL parameters mean empty JSON object');
+
+   MI_mbus.send_Command(
+      p_result     => l_result,
+      p_action     => 'refresh',
+      p_parameters => NULL
+   );
+
+   assert_Code(
+      l_result,
+      MI_mbus.RESULT_MBUS_NOT_IMPLEMENTED,
+      FALSE,
+      'NULL command parameters'
+   );
+   assert_True(
+      l_result.parameters.EXISTS('parameters_size')
+      AND l_result.parameters('parameters_size') = '2',
+      'NULL parameters were not normalized to {}'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ROLLBACK TO before_mi_mbus_smoke;
+
+   DBMS_OUTPUT.put_line('MI_mbus smoke test passed');
+
+EXCEPTION
+   WHEN OTHERS THEN
+      ROLLBACK TO before_mi_mbus_smoke;
+      RAISE;
+END;
+/
