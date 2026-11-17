@@ -3,7 +3,7 @@ IS
 
    /* MI-edo. Пакет бизнес-логики для 404 файлов */
 
-   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.3} {14.11.2026} Sulimoff$';
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.4} {17.11.2026} Sulimoff$';
 
 
    RET_FAIL     CONSTANT NUMBER := -1;
@@ -49,6 +49,18 @@ IS
       p_message_uuid          IN MI_REQ.MESSAGE_UUID%TYPE,
       p_ctaxreq_id            IN MI_REQ.CTAXREQ_ID%TYPE,
       p_icreate_type          IN MI_0600.ICREATE_TYPE%TYPE
+   );
+
+
+   /*
+      Временный Oracle transport stub для существующего Java scheduler ABI.
+
+      До согласования Multi-Bus API отправка не выполняется. Процедура не
+      изменяет MI_REQ, не захватывает request и не выполняет COMMIT.
+   */
+   PROCEDURE send_Pending (
+      p_ret_code  OUT NUMBER,
+      p_ret_info  OUT VARCHAR2
    );
 
 
@@ -842,6 +854,25 @@ IS
             p_details_text => TO_CLOB(SQLERRM)
          );
    END create_Request;
+
+
+   /*
+      Временный Oracle transport stub.
+
+      Java вызывает процедуру в отдельном TaskContext. Явный RET_FAIL нужен,
+      чтобы scheduler записал правдивый WARN до появления Multi-Bus API.
+   */
+   PROCEDURE send_Pending (
+      p_ret_code  OUT NUMBER,
+      p_ret_info  OUT VARCHAR2
+   )
+   IS
+   BEGIN
+      p_ret_code := RET_FAIL;
+      p_ret_info :=
+         'MI_0600_SEND_PENDING_UNSUPPORTED: '
+         || 'Oracle Multi-Bus transport is not configured';
+   END send_Pending;
 
 
    /* Для ядра, получить дату обработки файла */
