@@ -161,7 +161,51 @@ BEGIN
 
 
    ---------------------------------------------------------------------------
-   DBMS_OUTPUT.put_line('2. reject duplicate final archive without changes');
+   DBMS_OUTPUT.put_line('2. send_pending reports unsupported without state changes');
+
+   MI_0600_Api.send_Pending(
+      l_ret_code,
+      l_ret_info
+   );
+
+   assert_True(
+      l_ret_code = MI_0600_Api.RET_FAIL,
+      'send_Pending must return RET_FAIL'
+   );
+
+   assert_True(
+      INSTR(
+         NVL(l_ret_info, '<NULL>'),
+         'MI_0600_SEND_PENDING_UNSUPPORTED'
+      ) = 1,
+      'send_Pending returned unexpected info: ' || NVL(l_ret_info, '<NULL>')
+   );
+
+   SELECT r.STATUS_CD,
+          h.DSEND_STAMP
+     INTO l_status_cd,
+          l_dsend_stamp
+     FROM MI_REQ r
+     JOIN MI_0600 h
+       ON h.REQ_ID = r.REQ_ID
+    WHERE r.REQ_ID = l_req_id
+      AND h.ITM_ID = l_itm_id;
+
+   assert_True(
+      l_status_cd = MI_Request_Api.STATUS_NEW,
+      'send_Pending changed MI_REQ status'
+   );
+
+   assert_True(
+      l_dsend_stamp IS NULL,
+      'send_Pending simulated request sending'
+   );
+
+   DBMS_OUTPUT.put_line('   OK');
+
+
+   ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('3. reject duplicate final archive without changes');
 
    SELECT COUNT(*)
      INTO l_req_count
@@ -226,7 +270,7 @@ BEGIN
 
 
    ---------------------------------------------------------------------------
-   DBMS_OUTPUT.put_line('3. BUSY -> SENT stamps MI_0600');
+   DBMS_OUTPUT.put_line('4. BUSY -> SENT stamps MI_0600');
 
    l_transition := MI_Request_Api.take_For_Proc(l_req_id);
    assert_Success(l_transition, 'take_For_Proc failed');
@@ -251,7 +295,7 @@ BEGIN
 
 
    ---------------------------------------------------------------------------
-   DBMS_OUTPUT.put_line('4. apply successful item result');
+   DBMS_OUTPUT.put_line('5. apply successful item result');
 
    l_message_uuid := MI_Utils.uuid_V7;
 
@@ -309,7 +353,7 @@ BEGIN
 
 
    ---------------------------------------------------------------------------
-   DBMS_OUTPUT.put_line('5. replay is idempotent');
+   DBMS_OUTPUT.put_line('6. replay is idempotent');
 
    MI_0600_Api.apply_Item_Result(
       p_request_uuid      => l_request_uuid,
