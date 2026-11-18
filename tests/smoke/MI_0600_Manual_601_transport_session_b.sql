@@ -13,6 +13,7 @@ DECLARE
    l_ret_info         VARCHAR2(4000);
    l_state_cd         CHAR(1);
    l_receive_entered  NUMBER;
+   l_public_receive_count PLS_INTEGER;
 
    PROCEDURE fail (p_message IN VARCHAR2)
    IS
@@ -24,7 +25,20 @@ BEGIN
       fail('Set APPROVED_REQ_ID to the request used by session A, never 351');
    END IF;
 
-   DBMS_OUTPUT.put_line('1. proving dispatch holds no MI_REQ/attempt row lock');
+   DBMS_OUTPUT.put_line('1. no public MI_mbus receive bypass exists');
+
+   SELECT COUNT(*)
+     INTO l_public_receive_count
+     FROM USER_PROCEDURES
+    WHERE OBJECT_NAME = 'MI_MBUS'
+      AND PROCEDURE_NAME = 'RECEIVE_RESPONSE';
+
+   IF l_public_receive_count <> 0 THEN
+      fail('public MI_mbus.receive_Response bypass is accessible');
+   END IF;
+   DBMS_OUTPUT.put_line('   public receive bypass absent: OK');
+
+   DBMS_OUTPUT.put_line('2. proving dispatch holds no MI_REQ/attempt row lock');
 
    SELECT REQ_ID
      INTO l_dummy
@@ -41,7 +55,7 @@ BEGIN
    ROLLBACK;
    DBMS_OUTPUT.put_line('   both NOWAIT row locks acquired: OK');
 
-   DBMS_OUTPUT.put_line('2. reconcile must see shared user lock and skip QUERY_RECEIVE');
+   DBMS_OUTPUT.put_line('3. reconcile must see shared user lock and skip QUERY_RECEIVE');
 
    MI_0600_Api.reconcile_Manual_601(
       p_req_id   => l_req_id,

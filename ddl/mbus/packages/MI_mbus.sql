@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_mbus
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.3.0} {18.11.2026} Sulimoff$';
+      '$Id: {1.3.1} {18.11.2026} Sulimoff$';
 
 
    RESULT_ALREADY_IN_PROGRESS CONSTANT VARCHAR2(100) := 'ALREADY_IN_PROGRESS';
@@ -51,17 +51,6 @@ IS
       p_req_id          IN  MI_REQ.REQ_ID%TYPE,
       p_call_uuid       IN  VARCHAR2,
       p_dispatch_token  IN  VARCHAR2,
-      p_result          OUT MI_ResultCtx.exec_Result_t
-   );
-
-
-   /*
-      Получает поздний response по уже выделенному CBS correlation ID.
-      Эта процедура никогда не выполняет enqueue.
-   */
-   PROCEDURE receive_Response (
-      p_response_queue  IN  VARCHAR2,
-      p_correlation_id  IN  VARCHAR2,
       p_result          OUT MI_ResultCtx.exec_Result_t
    );
 
@@ -132,13 +121,6 @@ IS
       'MI_MBUS.SEND_REQUEST#INVALID_DISPATCH_CAPABILITY';
    cErr_Request_351 CONSTANT VARCHAR2(100) :=
       'MI_MBUS.SEND_REQUEST#REQ_ID_351_FORBIDDEN';
-
-   cErr_Receive_Bus_Return CONSTANT VARCHAR2(100) :=
-      'MI_MBUS.RECEIVE_RESPONSE#BUS_ERROR';
-   cErr_Receive_Empty CONSTANT VARCHAR2(100) :=
-      'MI_MBUS.RECEIVE_RESPONSE#XXL_RESPONSE_EMPTY';
-   cErr_Receive_Parse CONSTANT VARCHAR2(100) :=
-      'MI_MBUS.RECEIVE_RESPONSE#XXL_RESPONSE_PARSE_ERROR';
 
    cErr_Response_Not_Found CONSTANT VARCHAR2(100) :=
       'MI_MBUS.SEND_RESPONSE#RESPONSE_NOT_FOUND';
@@ -1224,113 +1206,6 @@ IS
             p_req_id => p_req_id
          );
    END send_Claimed_Request;
-
-
-   ---------------------------------------------------------------------------
-   PROCEDURE receive_Response (
-      p_response_queue  IN  VARCHAR2,
-      p_correlation_id  IN  VARCHAR2,
-      p_result          OUT MI_ResultCtx.exec_Result_t
-   )
-   IS
-      l_response_xml   CLOB;
-      l_error_message  VARCHAR2(32767);
-      l_bus_result     NUMBER;
-      l_response_size  PLS_INTEGER := 0;
-   BEGIN
-      IF TRIM(p_response_queue) IS NULL
-         OR TRIM(p_correlation_id) IS NULL
-      THEN
-         p_result :=
-            failure_Result(
-               p_code => cErr_Receive_Bus_Return,
-               p_info => 'Pinned response queue and correlation are required'
-            );
-         put_Parameter(p_result, 'receive_entered', '0');
-         RETURN;
-      END IF;
-
-      BEGIN
-         l_bus_result :=
-            CBS_BUS.QUERY_RECEIVE(
-               p_response_queue,
-               p_correlation_id,
-               0,
-               l_response_xml,
-               l_error_message
-            );
-      EXCEPTION
-         WHEN OTHERS THEN
-            p_result :=
-               MI_ResultCtx.from_Exception(
-                  p_sqlcode => SQLCODE,
-                  p_sqlerrm => SQLERRM,
-                  p_code    => cErr_Receive_Bus_Return,
-                  p_info    => 'Receive-only Multi-Bus call failed'
-               );
-            put_Parameter(p_result, 'receive_entered', '1');
-            put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
-            put_Parameter(p_result, 'retry_safe', '0');
-            put_Parameter(p_result, 'bus_correlation_id', p_correlation_id);
-            put_Parameter(p_result, 'response_queue', p_response_queue);
-            RETURN;
-      END;
-
-      IF l_response_xml IS NOT NULL THEN
-         l_response_size := DBMS_LOB.getlength(l_response_xml);
-      END IF;
-
-      IF NVL(l_bus_result, -1) <> 0 THEN
-         p_result :=
-            MI_ResultCtx.failure(
-               p_code       => cErr_Receive_Bus_Return,
-               p_info       => 'Receive-only Multi-Bus returned an error',
-               p_cause_code => 'MBUS_ERROR',
-               p_cause_info => SUBSTR(l_error_message, 1, 2000)
-            );
-         put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
-         put_Parameter(p_result, 'retry_safe', '0');
-      ELSIF l_response_size = 0
-         OR REGEXP_LIKE(
-               DBMS_LOB.SUBSTR(l_response_xml, 4000, 1),
-               '^[[:space:]]*$'
-            )
-      THEN
-         p_result :=
-            failure_Result(
-               p_code => cErr_Receive_Empty,
-               p_info => 'No late XXLResponse is available'
-            );
-         put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
-         put_Parameter(p_result, 'retry_safe', '0');
-      ELSE
-         BEGIN
-            p_result :=
-               MI_ResultCtx.result_From_Xml(
-                  p_xml             => l_response_xml,
-                  p_expected_action => 'send'
-               );
-         EXCEPTION
-            WHEN OTHERS THEN
-               p_result :=
-                  MI_ResultCtx.from_Exception(
-                     p_sqlcode => SQLCODE,
-                     p_sqlerrm => SQLERRM,
-                     p_code    => cErr_Receive_Parse,
-                     p_info    => 'Error parsing late XXLResponse'
-                  );
-               put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
-               put_Parameter(p_result, 'retry_safe', '0');
-         END;
-      END IF;
-
-      put_Parameter(p_result, 'receive_entered', '1');
-      put_Number(p_result, 'response_size', l_response_size);
-      put_Number(p_result, 'bus_result_code', l_bus_result);
-      put_Parameter(p_result, 'bus_correlation_id', p_correlation_id);
-      put_Parameter(p_result, 'response_queue', p_response_queue);
-   END receive_Response;
-
 
    ---------------------------------------------------------------------------
    PROCEDURE send_Response (

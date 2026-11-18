@@ -30,11 +30,15 @@ DECLARE
    l_pinned_timeout      PLS_INTEGER;
    l_state_cd            CHAR(1);
    l_transport_entered   NUMBER;
+   l_receive_entered     NUMBER;
    l_status_cd           MI_REQ.STATUS_CD%TYPE;
    l_dsend_stamp         MI_0600.DSEND_STAMP%TYPE;
+   l_status_before       MI_REQ.STATUS_CD%TYPE;
+   l_dsend_before        MI_0600.DSEND_STAMP%TYPE;
    l_tx_id               VARCHAR2(100);
    l_count_before        PLS_INTEGER;
    l_count_after         PLS_INTEGER;
+   l_public_receive_count PLS_INTEGER;
 
    PROCEDURE fail (p_message IN VARCHAR2)
    IS
@@ -75,6 +79,20 @@ DECLARE
          ROLLBACK;
    END cleanup;
 BEGIN
+   DBMS_OUTPUT.put_line('0. MI_mbus has no public receive-only entry');
+
+   SELECT COUNT(*)
+     INTO l_public_receive_count
+     FROM USER_PROCEDURES
+    WHERE OBJECT_NAME = 'MI_MBUS'
+      AND PROCEDURE_NAME = 'RECEIVE_RESPONSE';
+
+   assert_True(
+      l_public_receive_count = 0,
+      'public MI_mbus.receive_Response is still accessible'
+   );
+   DBMS_OUTPUT.put_line('   OK');
+
    DBMS_LOB.createtemporary(l_zip_blob, TRUE);
    DBMS_LOB.writeappend(
       l_zip_blob,
@@ -265,6 +283,103 @@ BEGIN
       'unexpected REQ_ID=351 result: ' || l_ret_info
    );
    assert_True(l_count_after = l_count_before, 'REQ_ID=351 attempt DML occurred');
+   DBMS_OUTPUT.put_line('   OK');
+
+   DBMS_OUTPUT.put_line(
+      '7. exact SEND_PUBLISHED with incomplete DB evidence is read-only and UNKNOWN'
+   );
+
+   SELECT r.STATUS_CD,
+          h.DSEND_STAMP
+     INTO l_status_before,
+          l_dsend_before
+     FROM MI_REQ r
+     JOIN MI_0600 h
+       ON h.REQ_ID = r.REQ_ID
+    WHERE r.REQ_ID = l_req_id;
+
+   UPDATE MI_0600_SEND_ATTEMPT
+      SET STATE_CD = 'U',
+          FINISHED_AT = SYSTIMESTAMP,
+          RESULT_CODE = 'SEND_PUBLISHED',
+          RESULT_INFO = 'non-live smoke: exact response without DB evidence',
+          RECEIVE_ENTERED = NULL
+    WHERE REQ_ID = l_req_id;
+   COMMIT;
+
+   MI_0600_Api.reconcile_Manual_601(
+      p_req_id   => l_req_id,
+      p_ret_code => l_ret_code,
+      p_ret_info => l_ret_info
+   );
+
+   assert_True(
+      l_ret_code = MI_0600_Api.RET_FAIL,
+      'incomplete persisted evidence was accepted: ' || l_ret_info
+   );
+   assert_True(
+      INSTR(l_ret_info, 'MI_0600_MANUAL_601_UNKNOWN') = 1,
+      'unexpected incomplete-evidence result: ' || l_ret_info
+   );
+
+   SELECT a.STATE_CD,
+          a.RECEIVE_ENTERED,
+          r.STATUS_CD,
+          h.DSEND_STAMP
+     INTO l_state_cd,
+          l_receive_entered,
+          l_status_cd,
+          l_dsend_stamp
+     FROM MI_0600_SEND_ATTEMPT a
+     JOIN MI_REQ r
+       ON r.REQ_ID = a.REQ_ID
+     JOIN MI_0600 h
+       ON h.REQ_ID = a.REQ_ID
+    WHERE a.REQ_ID = l_req_id;
+
+   assert_True(l_state_cd = 'U', 'incomplete evidence did not remain UNKNOWN');
+   assert_True(l_receive_entered IS NULL, 'exact persisted result entered receive');
+   assert_True(l_status_cd = l_status_before, 'confirm changed MI_REQ.STATUS_CD');
+   assert_True(
+         (l_dsend_stamp IS NULL AND l_dsend_before IS NULL)
+      OR l_dsend_stamp = l_dsend_before,
+      'confirm changed MI_0600.DSEND_STAMP'
+   );
+   COMMIT;
+   DBMS_OUTPUT.put_line('   OK');
+
+   DBMS_OUTPUT.put_line('8. terminal S is never downgraded and never enters receive');
+
+   UPDATE MI_0600_SEND_ATTEMPT
+      SET STATE_CD = 'S',
+          FINISHED_AT = SYSTIMESTAMP,
+          RESULT_CODE = 'SEND_PUBLISHED',
+          RESULT_INFO = 'non-live smoke: terminal state race winner',
+          RECEIVE_ENTERED = NULL
+    WHERE REQ_ID = l_req_id;
+   COMMIT;
+
+   MI_0600_Api.reconcile_Manual_601(
+      p_req_id   => l_req_id,
+      p_ret_code => l_ret_code,
+      p_ret_info => l_ret_info
+   );
+
+   assert_True(
+      l_ret_code = MI_0600_Api.RET_OK,
+      'terminal S was not recognized: ' || l_ret_info
+   );
+
+   SELECT STATE_CD,
+          RECEIVE_ENTERED
+     INTO l_state_cd,
+          l_receive_entered
+     FROM MI_0600_SEND_ATTEMPT
+    WHERE REQ_ID = l_req_id;
+
+   assert_True(l_state_cd = 'S', 'terminal S was downgraded');
+   assert_True(l_receive_entered IS NULL, 'terminal S entered QUERY_RECEIVE');
+   COMMIT;
    DBMS_OUTPUT.put_line('   OK');
 
    cleanup;

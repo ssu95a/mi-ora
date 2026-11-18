@@ -3,7 +3,7 @@ IS
 
    /* MI-edo. Пакет бизнес-логики для 404 файлов */
 
-   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.1.0} {18.11.2026} Sulimoff$';
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.1.1} {18.11.2026} Sulimoff$';
 
 
    RET_FAIL     CONSTANT NUMBER := -1;
@@ -944,6 +944,121 @@ IS
 
 
    ---------------------------------------------------------------------------
+   PROCEDURE receive_Pinned_Response (
+      p_response_queue  IN  VARCHAR2,
+      p_correlation_id  IN  VARCHAR2,
+      p_result          OUT MI_ResultCtx.exec_Result_t
+   )
+   IS
+      l_response_xml   CLOB;
+      l_error_message  VARCHAR2(32767);
+      l_bus_result     NUMBER;
+      l_response_size  PLS_INTEGER := 0;
+   BEGIN
+      IF TRIM(p_response_queue) IS NULL
+         OR TRIM(p_correlation_id) IS NULL
+      THEN
+         p_result :=
+            failure_Result(
+               p_code => 'MI_0600.RECONCILE#INVALID_ROUTE',
+               p_info => 'Pinned response queue and correlation are required'
+            );
+         p_result.parameters('receive_entered') := '0';
+         RETURN;
+      END IF;
+
+      BEGIN
+         l_bus_result :=
+            CBS_BUS.QUERY_RECEIVE(
+               p_response_queue,
+               p_correlation_id,
+               0,
+               l_response_xml,
+               l_error_message
+            );
+      EXCEPTION
+         WHEN OTHERS THEN
+            p_result :=
+               MI_ResultCtx.from_Exception(
+                  p_sqlcode => SQLCODE,
+                  p_sqlerrm => SQLERRM,
+                  p_code    => 'MI_0600.RECONCILE#RECEIVE_ERROR',
+                  p_info    => 'Receive-only Multi-Bus call failed'
+               );
+            p_result.parameters('receive_entered') := '1';
+            p_result.parameters('delivery_outcome') := 'UNKNOWN';
+            p_result.parameters('retry_safe') := '0';
+            p_result.parameters('bus_correlation_id') :=
+               SUBSTR(p_correlation_id, 1, 2000);
+            p_result.parameters('response_queue') :=
+               SUBSTR(p_response_queue, 1, 2000);
+            RETURN;
+      END;
+
+      IF l_response_xml IS NOT NULL THEN
+         l_response_size := DBMS_LOB.getlength(l_response_xml);
+      END IF;
+
+      IF NVL(l_bus_result, -1) <> 0 THEN
+         p_result :=
+            MI_ResultCtx.failure(
+               p_code       => 'MI_0600.RECONCILE#RECEIVE_ERROR',
+               p_info       => 'Receive-only Multi-Bus returned an error',
+               p_cause_code => 'MBUS_ERROR',
+               p_cause_info => SUBSTR(l_error_message, 1, 2000)
+            );
+         p_result.parameters('delivery_outcome') := 'UNKNOWN';
+         p_result.parameters('retry_safe') := '0';
+      ELSIF l_response_size = 0
+         OR REGEXP_LIKE(
+               DBMS_LOB.SUBSTR(l_response_xml, 4000, 1),
+               '^[[:space:]]*$'
+            )
+      THEN
+         p_result :=
+            failure_Result(
+               p_code => 'MI_0600.RECONCILE#EMPTY_RESPONSE',
+               p_info => 'No late XXLResponse is available'
+            );
+         p_result.parameters('delivery_outcome') := 'UNKNOWN';
+         p_result.parameters('retry_safe') := '0';
+      ELSE
+         BEGIN
+            p_result :=
+               MI_ResultCtx.result_From_Xml(
+                  p_xml             => l_response_xml,
+                  p_expected_action => 'send'
+               );
+         EXCEPTION
+            WHEN OTHERS THEN
+               p_result :=
+                  MI_ResultCtx.from_Exception(
+                     p_sqlcode => SQLCODE,
+                     p_sqlerrm => SQLERRM,
+                     p_code    => 'MI_0600.RECONCILE#PARSE_ERROR',
+                     p_info    => 'Error parsing late XXLResponse'
+                  );
+               p_result.parameters('delivery_outcome') := 'UNKNOWN';
+               p_result.parameters('retry_safe') := '0';
+         END;
+      END IF;
+
+      p_result.parameters('receive_entered') := '1';
+      p_result.parameters('response_size') := TO_CHAR(l_response_size, 'TM9');
+
+      IF l_bus_result IS NOT NULL THEN
+         p_result.parameters('bus_result_code') :=
+            TO_CHAR(l_bus_result, 'TM9');
+      END IF;
+
+      p_result.parameters('bus_correlation_id') :=
+         SUBSTR(p_correlation_id, 1, 2000);
+      p_result.parameters('response_queue') :=
+         SUBSTR(p_response_queue, 1, 2000);
+   END receive_Pinned_Response;
+
+
+   ---------------------------------------------------------------------------
    FUNCTION confirm_Request_Sent (
       p_req_id           IN  MI_REQ.REQ_ID%TYPE,
       p_transition_info  OUT VARCHAR2
@@ -953,7 +1068,6 @@ IS
       l_status_cd    MI_REQ.STATUS_CD%TYPE;
       l_dsend_stamp  MI_0600.DSEND_STAMP%TYPE;
       l_claimed_at   MI_0600_SEND_ATTEMPT.CLAIMED_AT%TYPE;
-      l_transition   MI_ResultCtx.exec_Result_t;
    BEGIN
       p_transition_info := NULL;
 
@@ -970,53 +1084,6 @@ IS
           ON a.REQ_ID = r.REQ_ID
        WHERE r.REQ_ID = p_req_id;
 
-      IF l_status_cd = MI_Request_Api.STATUS_NEW THEN
-         l_transition :=
-            MI_Request_Api.take_For_Proc(
-               p_req_id => p_req_id,
-               p_info   => 'MI_0600 managed 601 dispatch'
-            );
-
-         IF MI_ResultCtx.is_Failed(l_transition) THEN
-            p_transition_info :=
-               SUBSTR(
-                     NVL(l_transition.result_code, '<NULL>')
-                  || ': '
-                  || NVL(l_transition.result_info, '<NULL>'),
-                  1,
-                  2000
-               );
-            RETURN FALSE;
-         END IF;
-
-         l_status_cd := MI_Request_Api.STATUS_BUSY;
-      END IF;
-
-      IF l_status_cd = MI_Request_Api.STATUS_BUSY THEN
-         l_transition := MI_Request_Api.to_Sent(p_req_id);
-
-         IF MI_ResultCtx.is_Failed(l_transition) THEN
-            p_transition_info :=
-               SUBSTR(
-                     NVL(l_transition.result_code, '<NULL>')
-                  || ': '
-                  || NVL(l_transition.result_info, '<NULL>'),
-                  1,
-                  2000
-               );
-            RETURN FALSE;
-         END IF;
-      END IF;
-
-      SELECT r.STATUS_CD,
-             h.DSEND_STAMP
-        INTO l_status_cd,
-             l_dsend_stamp
-        FROM MI_REQ r
-        JOIN MI_0600 h
-          ON h.REQ_ID = r.REQ_ID
-       WHERE r.REQ_ID = p_req_id;
-
       IF l_status_cd IN (
             MI_Request_Api.STATUS_SENT,
             MI_Request_Api.STATUS_DONE
@@ -1028,7 +1095,7 @@ IS
       END IF;
 
       p_transition_info :=
-            'Persisted send evidence is incomplete: status_cd='
+            'Persisted send evidence is incomplete; business state was not changed: status_cd='
          || NVL(TO_CHAR(l_status_cd, 'TM9'), '<NULL>')
          || '; dsend_stamp='
          || CASE
@@ -1061,6 +1128,7 @@ IS
       l_retry_safe        NUMBER;
       l_transport_entered NUMBER;
       l_receive_entered   NUMBER;
+      l_current_state     MI_0600_SEND_ATTEMPT.STATE_CD%TYPE;
    BEGIN
       IF p_reconciled THEN
          l_reconciled := 1;
@@ -1125,12 +1193,40 @@ IS
                    l_receive_entered,
                    RECEIVE_ENTERED
                 )
-       WHERE REQ_ID = p_req_id;
+       WHERE REQ_ID = p_req_id
+         AND (
+                (STATE_CD = 'C' AND p_state_cd IN ('S', 'U', 'N'))
+             OR (STATE_CD = 'U' AND p_state_cd IN ('S', 'U'))
+             OR (STATE_CD = 'S' AND p_state_cd = 'S')
+             OR (STATE_CD = 'N' AND p_state_cd = 'N')
+         );
 
-      IF SQL%ROWCOUNT <> 1 THEN
+      IF SQL%ROWCOUNT = 0 THEN
+         BEGIN
+            SELECT STATE_CD
+              INTO l_current_state
+              FROM MI_0600_SEND_ATTEMPT
+             WHERE REQ_ID = p_req_id;
+         EXCEPTION
+            WHEN NO_DATA_FOUND THEN
+               RAISE_APPLICATION_ERROR(
+                  -20031,
+                  'MI_0600_SEND_ATTEMPT not found for REQ_ID=' || p_req_id
+               );
+         END;
+
+         IF l_current_state IN ('S', 'N') THEN
+            RETURN;
+         END IF;
+
          RAISE_APPLICATION_ERROR(
-            -20031,
-            'MI_0600_SEND_ATTEMPT not found for REQ_ID=' || p_req_id
+            -20032,
+               'MI_0600_SEND_ATTEMPT transition rejected: REQ_ID='
+            || p_req_id
+            || '; current_state='
+            || l_current_state
+            || '; requested_state='
+            || p_state_cd
          );
       END IF;
    END store_Attempt_Outcome;
@@ -1451,10 +1547,8 @@ IS
       END IF;
 
       BEGIN
-         SELECT STATE_CD,
-                LOCK_ID
-           INTO l_state_cd,
-                l_lock_id
+         SELECT LOCK_ID
+           INTO l_lock_id
            FROM MI_0600_SEND_ATTEMPT
           WHERE REQ_ID = p_req_id
             AND TRIM(CALL_UUID) = TRIM(p_call_uuid);
@@ -1468,15 +1562,6 @@ IS
                || 'durable claim was not found';
             RETURN;
       END;
-
-      IF l_state_cd <> 'C' THEN
-         clear_Dispatch_Capability;
-         p_ret_code := RET_FAIL;
-         p_ret_info :=
-            'MI_0600_MANUAL_601#ATTEMPT_NOT_CLAIMED: state='
-            || NVL(l_state_cd, '<NULL>');
-         RETURN;
-      END IF;
 
       /*
          Read-only validation above must not create a transaction. Repeat the
@@ -1503,6 +1588,35 @@ IS
          p_ret_info :=
             'MI_0600_MANUAL_601#DISPATCH_LOCK_FAILED: result='
             || TO_CHAR(l_lock_result, 'TM9');
+         RETURN;
+      END IF;
+
+      /*
+         State read before DBMS_LOCK would be stale if reconciliation finished
+         in the gap. Reload it only after this path owns the shared lock.
+      */
+      BEGIN
+         SELECT STATE_CD
+           INTO l_state_cd
+           FROM MI_0600_SEND_ATTEMPT
+          WHERE REQ_ID = p_req_id
+            AND TRIM(CALL_UUID) = TRIM(p_call_uuid);
+      EXCEPTION
+         WHEN NO_DATA_FOUND THEN
+            clear_Dispatch_Capability;
+            p_ret_code := RET_FAIL;
+            p_ret_info :=
+               'MI_0600_MANUAL_601#ATTEMPT_NOT_COMMITTED: '
+               || 'durable claim disappeared after lock acquisition';
+            RETURN;
+      END;
+
+      IF l_state_cd <> 'C' THEN
+         clear_Dispatch_Capability;
+         p_ret_code := RET_FAIL;
+         p_ret_info :=
+            'MI_0600_MANUAL_601#ATTEMPT_NOT_CLAIMED: state='
+            || NVL(l_state_cd, '<NULL>');
          RETURN;
       END IF;
 
@@ -1674,16 +1788,8 @@ IS
       END IF;
 
       BEGIN
-         SELECT STATE_CD,
-                LOCK_ID,
-                RESPONSE_QUEUE,
-                BUS_CORRELATION_ID,
-                RESULT_CODE
-           INTO l_state_cd,
-                l_lock_id,
-                l_response_queue,
-                l_correlation_id,
-                l_saved_result_code
+         SELECT LOCK_ID
+           INTO l_lock_id
            FROM MI_0600_SEND_ATTEMPT
           WHERE REQ_ID = p_req_id;
 
@@ -1732,6 +1838,30 @@ IS
 
       l_lock_acquired := TRUE;
 
+      /*
+         LOCK_ID is immutable and is the only value allowed before DBMS_LOCK.
+         State, route and prior evidence are reloaded from committed data after
+         the shared lock is owned, so stale C/U cannot downgrade terminal S/N.
+      */
+      BEGIN
+         SELECT STATE_CD,
+                RESPONSE_QUEUE,
+                BUS_CORRELATION_ID,
+                RESULT_CODE
+           INTO l_state_cd,
+                l_response_queue,
+                l_correlation_id,
+                l_saved_result_code
+           FROM MI_0600_SEND_ATTEMPT
+          WHERE REQ_ID = p_req_id;
+      EXCEPTION
+         WHEN NO_DATA_FOUND THEN
+            p_ret_code := RET_FAIL;
+            p_ret_info :=
+               'MI_0600_MANUAL_601#ATTEMPT_NOT_FOUND_AFTER_LOCK';
+            RETURN;
+      END;
+
       IF g_dispatch_req_id = p_req_id THEN
          clear_Dispatch_Capability;
       END IF;
@@ -1769,9 +1899,10 @@ IS
       ELSE
          /*
             Receive-only path: pinned response queue + saved CBS ID, nWait=0.
-            MI_mbus.receive_Response never calls queryBusClob and never enqueues.
+            Private package-body entry cannot bypass the shared lock or use an
+            arbitrary route through a public MI API.
          */
-         MI_mbus.receive_Response(
+         receive_Pinned_Response(
             p_response_queue => l_response_queue,
             p_correlation_id => l_correlation_id,
             p_result         => l_result
