@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_Request_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.1.0} {15.11.2026} Sulimoff$';
+      '$Id: {1.2.0} {18.11.2026} Sulimoff$';
 
 
    SUBTYPE Status_t IS PLS_INTEGER RANGE -1 .. 3;
@@ -106,6 +106,15 @@ IS
       RETURN MI_ResultCtx.exec_Result_t;
 
 
+   /* JDBC scalar wrapper. COMMIT/ROLLBACK не выполняет. */
+   PROCEDURE take_For_Proc (
+      p_req_id    IN  MI_REQ.REQ_ID%TYPE,
+      p_info      IN  VARCHAR2,
+      p_ret_code  OUT NUMBER,
+      p_ret_info  OUT VARCHAR2
+   );
+
+
    /*
       BUSY -> SENT
    */
@@ -113,6 +122,14 @@ IS
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
       RETURN MI_ResultCtx.exec_Result_t;
+
+
+   /* JDBC scalar wrapper. COMMIT/ROLLBACK не выполняет. */
+   PROCEDURE to_Sent (
+      p_req_id    IN  MI_REQ.REQ_ID%TYPE,
+      p_ret_code  OUT NUMBER,
+      p_ret_info  OUT VARCHAR2
+   );
 
 
    /*
@@ -124,6 +141,14 @@ IS
       RETURN MI_ResultCtx.exec_Result_t;
 
 
+   /* JDBC scalar wrapper. COMMIT/ROLLBACK не выполняет. */
+   PROCEDURE to_Success (
+      p_req_id    IN  MI_REQ.REQ_ID%TYPE,
+      p_ret_code  OUT NUMBER,
+      p_ret_info  OUT VARCHAR2
+   );
+
+
    /*
       BUSY / SENT -> ERROR
    */
@@ -131,6 +156,14 @@ IS
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
       RETURN MI_ResultCtx.exec_Result_t;
+
+
+   /* JDBC scalar wrapper. COMMIT/ROLLBACK не выполняет. */
+   PROCEDURE to_Error (
+      p_req_id    IN  MI_REQ.REQ_ID%TYPE,
+      p_ret_code  OUT NUMBER,
+      p_ret_info  OUT VARCHAR2
+   );
 
 
    /*
@@ -408,6 +441,52 @@ IS
 
       RETURN l_result;
    END failure_Result;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE export_Jdbc_Result (
+      p_result    IN  MI_ResultCtx.exec_Result_t,
+      p_ret_code  OUT NUMBER,
+      p_ret_info  OUT VARCHAR2
+   )
+   IS
+   BEGIN
+      p_ret_code := NULL;
+
+      BEGIN
+         p_ret_code := TO_NUMBER(p_result.parameters('ret_code'));
+      EXCEPTION
+         WHEN NO_DATA_FOUND OR VALUE_ERROR THEN
+            p_ret_code := NULL;
+      END;
+
+      IF p_ret_code IS NULL THEN
+         IF MI_ResultCtx.is_Success(p_result) THEN
+            p_ret_code := RET_OK;
+         ELSE
+            p_ret_code := RET_FAIL;
+         END IF;
+      END IF;
+
+      p_ret_info :=
+         SUBSTR(
+               NVL(p_result.result_code, '<NO_RESULT_CODE>')
+            || ': '
+            || NVL(p_result.result_info, '<NO_RESULT_INFO>')
+            || CASE
+                  WHEN p_result.cause_code IS NOT NULL
+                     OR p_result.cause_info IS NOT NULL
+                  THEN
+                        '; cause='
+                     || NVL(p_result.cause_code, '<NO_CAUSE_CODE>')
+                     || ': '
+                     || NVL(p_result.cause_info, '<NO_CAUSE_INFO>')
+                  ELSE NULL
+               END,
+            1,
+            4000
+         );
+   END export_Jdbc_Result;
 
 
    ---------------------------------------------------------------------------
@@ -716,6 +795,30 @@ IS
 
 
    ---------------------------------------------------------------------------
+   PROCEDURE take_For_Proc (
+      p_req_id    IN  MI_REQ.REQ_ID%TYPE,
+      p_info      IN  VARCHAR2,
+      p_ret_code  OUT NUMBER,
+      p_ret_info  OUT VARCHAR2
+   )
+   IS
+      l_result MI_ResultCtx.exec_Result_t;
+   BEGIN
+      l_result :=
+         take_For_Proc(
+            p_req_id => p_req_id,
+            p_info   => p_info
+         );
+
+      export_Jdbc_Result(
+         p_result   => l_result,
+         p_ret_code => p_ret_code,
+         p_ret_info => p_ret_info
+      );
+   END take_For_Proc;
+
+
+   ---------------------------------------------------------------------------
    FUNCTION to_Sent (
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
@@ -785,6 +888,25 @@ IS
                p_code    => 'REQUEST_TO_SENT_FAILED',
                p_info    => 'Ошибка перевода request в SENT'
             );
+   END to_Sent;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE to_Sent (
+      p_req_id    IN  MI_REQ.REQ_ID%TYPE,
+      p_ret_code  OUT NUMBER,
+      p_ret_info  OUT VARCHAR2
+   )
+   IS
+      l_result MI_ResultCtx.exec_Result_t;
+   BEGIN
+      l_result := to_Sent(p_req_id => p_req_id);
+
+      export_Jdbc_Result(
+         p_result   => l_result,
+         p_ret_code => p_ret_code,
+         p_ret_info => p_ret_info
+      );
    END to_Sent;
 
 
@@ -862,6 +984,25 @@ IS
 
 
    ---------------------------------------------------------------------------
+   PROCEDURE to_Success (
+      p_req_id    IN  MI_REQ.REQ_ID%TYPE,
+      p_ret_code  OUT NUMBER,
+      p_ret_info  OUT VARCHAR2
+   )
+   IS
+      l_result MI_ResultCtx.exec_Result_t;
+   BEGIN
+      l_result := to_Success(p_req_id => p_req_id);
+
+      export_Jdbc_Result(
+         p_result   => l_result,
+         p_ret_code => p_ret_code,
+         p_ret_info => p_ret_info
+      );
+   END to_Success;
+
+
+   ---------------------------------------------------------------------------
    FUNCTION to_Error (
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
@@ -931,6 +1072,25 @@ IS
                p_code    => 'REQUEST_TO_ERROR_FAILED',
                p_info    => 'Ошибка перевода request в ERROR'
             );
+   END to_Error;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE to_Error (
+      p_req_id    IN  MI_REQ.REQ_ID%TYPE,
+      p_ret_code  OUT NUMBER,
+      p_ret_info  OUT VARCHAR2
+   )
+   IS
+      l_result MI_ResultCtx.exec_Result_t;
+   BEGIN
+      l_result := to_Error(p_req_id => p_req_id);
+
+      export_Jdbc_Result(
+         p_result   => l_result,
+         p_ret_code => p_ret_code,
+         p_ret_info => p_ret_info
+      );
    END to_Error;
 
 
@@ -1375,35 +1535,11 @@ IS
             p_occurred_at   => p_occurred_at
          );
 
-      BEGIN
-         p_ret_code := TO_NUMBER(l_result.parameters('ret_code'));
-      EXCEPTION
-         WHEN NO_DATA_FOUND OR VALUE_ERROR THEN
-            IF MI_ResultCtx.is_Success(l_result) THEN
-               p_ret_code := RET_OK;
-            ELSE
-               p_ret_code := RET_FAIL;
-            END IF;
-      END;
-
-      p_ret_info :=
-         SUBSTR(
-               NVL(l_result.result_code, '<NO_RESULT_CODE>')
-            || ': '
-            || NVL(l_result.result_info, '<NO_RESULT_INFO>')
-            || CASE
-                  WHEN l_result.cause_code IS NOT NULL
-                     OR l_result.cause_info IS NOT NULL
-                  THEN
-                        '; cause='
-                     || NVL(l_result.cause_code, '<NO_CAUSE_CODE>')
-                     || ': '
-                     || NVL(l_result.cause_info, '<NO_CAUSE_INFO>')
-                  ELSE NULL
-               END,
-            1,
-            4000
-         );
+      export_Jdbc_Result(
+         p_result   => l_result,
+         p_ret_code => p_ret_code,
+         p_ret_info => p_ret_info
+      );
    END apply_Request_Failure;
 
 
