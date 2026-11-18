@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_mbus
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.3.1} {18.11.2026} Sulimoff$';
+      '$Id: {1.2.0} {18.11.2026} Sulimoff$';
 
 
    RESULT_ALREADY_IN_PROGRESS CONSTANT VARCHAR2(100) := 'ALREADY_IN_PROGRESS';
@@ -26,32 +26,6 @@ IS
    PROCEDURE send_Request (
       p_req_id  IN  MI_REQ.REQ_ID%TYPE,
       p_result  OUT MI_ResultCtx.exec_Result_t
-   );
-
-
-   /*
-      Возвращает эффективный Multi-Bus маршрут request. DML и COMMIT не
-      выполняет. Используется claim для фиксации маршрута до enqueue.
-   */
-   PROCEDURE resolve_Request_Route (
-      p_req_id          IN  MI_REQ.REQ_ID%TYPE,
-      p_gate_alias      OUT VARCHAR2,
-      p_request_queue   OUT VARCHAR2,
-      p_response_queue  OUT VARCHAR2,
-      p_timeout_sec     OUT PLS_INTEGER,
-      p_result          OUT MI_ResultCtx.exec_Result_t
-   );
-
-
-   /*
-      Capability-protected transport path для уже зафиксированной попытки
-      MI_0600/601. Сырый dispatch token не хранится и не возвращается наружу.
-   */
-   PROCEDURE send_Claimed_Request (
-      p_req_id          IN  MI_REQ.REQ_ID%TYPE,
-      p_call_uuid       IN  VARCHAR2,
-      p_dispatch_token  IN  VARCHAR2,
-      p_result          OUT MI_ResultCtx.exec_Result_t
    );
 
 
@@ -115,12 +89,6 @@ IS
       'MI_MBUS.SEND_REQUEST#XXL_RESPONSE_EMPTY';
    cErr_Request_Response_Parse CONSTANT VARCHAR2(100) :=
       'MI_MBUS.SEND_REQUEST#XXL_RESPONSE_PARSE_ERROR';
-   cErr_Request_Managed_601 CONSTANT VARCHAR2(100) :=
-      'MI_MBUS.SEND_REQUEST#MANAGED_601_REQUIRED';
-   cErr_Request_Protected CONSTANT VARCHAR2(100) :=
-      'MI_MBUS.SEND_REQUEST#INVALID_DISPATCH_CAPABILITY';
-   cErr_Request_351 CONSTANT VARCHAR2(100) :=
-      'MI_MBUS.SEND_REQUEST#REQ_ID_351_FORBIDDEN';
 
    cErr_Response_Not_Found CONSTANT VARCHAR2(100) :=
       'MI_MBUS.SEND_RESPONSE#RESPONSE_NOT_FOUND';
@@ -427,86 +395,6 @@ IS
 
 
    ---------------------------------------------------------------------------
-   PROCEDURE resolve_Request_Route (
-      p_req_id          IN  MI_REQ.REQ_ID%TYPE,
-      p_gate_alias      OUT VARCHAR2,
-      p_request_queue   OUT VARCHAR2,
-      p_response_queue  OUT VARCHAR2,
-      p_timeout_sec     OUT PLS_INTEGER,
-      p_result          OUT MI_ResultCtx.exec_Result_t
-   )
-   IS
-      l_inf_id   MI_REQ.INF_ID%TYPE;
-      l_wsp_id   MI_INF.WSP_ID%TYPE;
-      l_valid    BOOLEAN;
-   BEGIN
-      p_gate_alias := NULL;
-      p_request_queue := NULL;
-      p_response_queue := NULL;
-      p_timeout_sec := NULL;
-
-      BEGIN
-         SELECT r.INF_ID,
-                i.WSP_ID
-           INTO l_inf_id,
-                l_wsp_id
-           FROM MI_REQ r
-           JOIN MI_INF i
-             ON i.INF_ID = r.INF_ID
-          WHERE r.REQ_ID = p_req_id;
-
-      EXCEPTION
-         WHEN NO_DATA_FOUND THEN
-            p_result :=
-               failure_Result(
-                  p_code => cErr_Request_Not_Found,
-                  p_info => 'Request not found in MI_REQ'
-               );
-            RETURN;
-      END;
-
-      resolve_Transport_Settings(
-         p_inf_id         => l_inf_id,
-         p_wsp_id         => l_wsp_id,
-         p_gate_alias     => p_gate_alias,
-         p_request_queue  => p_request_queue,
-         p_response_queue => p_response_queue,
-         p_timeout_sec    => p_timeout_sec,
-         p_result         => p_result,
-         p_is_valid       => l_valid
-      );
-
-      IF l_valid THEN
-         p_result :=
-            success_Result(
-               p_code => 'TRANSPORT_ROUTE_RESOLVED',
-               p_info => 'Multi-Bus route resolved'
-            );
-         put_Common_Context(
-            p_result,
-            p_call_uuid => NULL,
-            p_inf_id    => l_inf_id,
-            p_req_id    => p_req_id
-         );
-         put_Parameter(p_result, 'gate_alias', p_gate_alias);
-         put_Parameter(p_result, 'request_queue', p_request_queue);
-         put_Parameter(p_result, 'response_queue', p_response_queue);
-         put_Number(p_result, 'timeout_sec', p_timeout_sec);
-      END IF;
-
-   EXCEPTION
-      WHEN OTHERS THEN
-         p_result :=
-            MI_ResultCtx.from_Exception(
-               p_sqlcode => SQLCODE,
-               p_sqlerrm => SQLERRM,
-               p_code    => cErr_Transport_Config,
-               p_info    => 'Unable to resolve Multi-Bus route'
-            );
-   END resolve_Request_Route;
-
-
-   ---------------------------------------------------------------------------
    PROCEDURE call_Transport (
       p_request_xml         IN  CLOB,
       p_expected_action     IN  VARCHAR2,
@@ -517,16 +405,14 @@ IS
       p_bus_error_code      IN  VARCHAR2,
       p_empty_response_code IN  VARCHAR2,
       p_parse_error_code    IN  VARCHAR2,
-      p_result              OUT MI_ResultCtx.exec_Result_t,
-      p_correlation_id      IN  VARCHAR2 DEFAULT NULL
+      p_result              OUT MI_ResultCtx.exec_Result_t
    )
    IS
-      l_response_xml      CLOB;
-      l_error_message     VARCHAR2(32767);
-      l_correlation       VARCHAR2(2000) := p_correlation_id;
-      l_bus_result        NUMBER;
-      l_response_size     PLS_INTEGER := 0;
-      l_transport_entered BOOLEAN := FALSE;
+      l_response_xml  CLOB;
+      l_error_message VARCHAR2(32767);
+      l_correlation   VARCHAR2(2000);
+      l_bus_result    NUMBER;
+      l_response_size PLS_INTEGER := 0;
    BEGIN
       IF p_request_xml IS NULL THEN
          p_result :=
@@ -534,38 +420,21 @@ IS
                p_code => 'MI_MBUS.TRANSPORT#EMPTY_REQUEST',
                p_info => 'XXLRequest was not prepared'
             );
-         put_Parameter(p_result, 'transport_entered', '0');
          RETURN;
       END IF;
 
       BEGIN
-         l_transport_entered := TRUE;
-
-         IF p_correlation_id IS NULL THEN
-            l_bus_result :=
-               CBS_BUS.QUERY_BUS_CLOB(
-                  cSqueue_name => p_request_queue,
-                  cDqueue_name => p_response_queue,
-                  clXml        => p_request_xml,
-                  cCor         => l_correlation,
-                  busType      => p_gate_alias,
-                  nWait        => p_timeout_sec,
-                  SOUT         => l_response_xml,
-                  ERRORMSG     => l_error_message
-               );
-         ELSE
-            l_bus_result :=
-               CBS_BUS.queryBusClob(
-                  p_request_queue,
-                  p_response_queue,
-                  p_request_xml,
-                  l_correlation,
-                  p_gate_alias,
-                  p_timeout_sec,
-                  l_response_xml,
-                  l_error_message
-               );
-         END IF;
+         l_bus_result :=
+            CBS_BUS.QUERY_BUS_CLOB(
+               cSqueue_name => p_request_queue,
+               cDqueue_name => p_response_queue,
+               clXml        => p_request_xml,
+               cCor         => l_correlation,
+               busType      => p_gate_alias,
+               nWait        => p_timeout_sec,
+               SOUT         => l_response_xml,
+               ERRORMSG     => l_error_message
+            );
 
       EXCEPTION
          WHEN OTHERS THEN
@@ -577,10 +446,8 @@ IS
                   p_info    =>
                      'Oracle Multi-Bus call failed; delivery outcome is unknown'
                );
-            put_Parameter(p_result, 'transport_entered', '1');
             put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
             put_Parameter(p_result, 'retry_safe', '0');
-            put_Parameter(p_result, 'bus_correlation_id', l_correlation);
             put_Parameter(p_result, 'request_queue', p_request_queue);
             put_Parameter(p_result, 'response_queue', p_response_queue);
             put_Parameter(p_result, 'gate_alias', p_gate_alias);
@@ -646,11 +513,6 @@ IS
          END;
       END IF;
 
-      put_Parameter(
-         p_result,
-         'transport_entered',
-         CASE WHEN l_transport_entered THEN '1' ELSE '0' END
-      );
       put_Number(p_result, 'request_size', DBMS_LOB.getlength(p_request_xml));
       put_Number(p_result, 'response_size', l_response_size);
       put_Number(p_result, 'bus_result_code', l_bus_result);
@@ -659,177 +521,7 @@ IS
       put_Parameter(p_result, 'response_queue', p_response_queue);
       put_Parameter(p_result, 'gate_alias', p_gate_alias);
       put_Number(p_result, 'timeout_sec', p_timeout_sec);
-
-   EXCEPTION
-      WHEN OTHERS THEN
-         p_result :=
-            MI_ResultCtx.from_Exception(
-               p_sqlcode => SQLCODE,
-               p_sqlerrm => SQLERRM,
-               p_code    => p_bus_error_code,
-               p_info    =>
-                  CASE
-                     WHEN l_transport_entered
-                     THEN 'Transport processing failed; delivery outcome is unknown'
-                     ELSE 'Transport was rejected before the Multi-Bus call'
-                  END
-            );
-         put_Parameter(
-            p_result,
-            'transport_entered',
-            CASE WHEN l_transport_entered THEN '1' ELSE '0' END
-         );
-         put_Parameter(
-            p_result,
-            'delivery_outcome',
-            CASE WHEN l_transport_entered THEN 'UNKNOWN' ELSE 'NOT_ENQUEUED' END
-         );
-         put_Parameter(p_result, 'retry_safe', '0');
-         put_Parameter(p_result, 'bus_correlation_id', l_correlation);
-         put_Parameter(p_result, 'request_queue', p_request_queue);
-         put_Parameter(p_result, 'response_queue', p_response_queue);
-         put_Parameter(p_result, 'gate_alias', p_gate_alias);
-         put_Number(p_result, 'timeout_sec', p_timeout_sec);
    END call_Transport;
-
-
-   ---------------------------------------------------------------------------
-   PROCEDURE send_Request_Transport (
-      p_req_id              IN  MI_REQ.REQ_ID%TYPE,
-      p_inf_id              IN  MI_REQ.INF_ID%TYPE,
-      p_wsp_id              IN  MI_INF.WSP_ID%TYPE,
-      p_status_cd           IN  MI_REQ.STATUS_CD%TYPE,
-      p_request_correlation IN  MI_REQ.CORRELATION_ID%TYPE,
-      p_external_uuid       IN  MI_REQ.EXTERNAL_UUID%TYPE,
-      p_call_uuid           IN  VARCHAR2,
-      p_gate_alias          IN  VARCHAR2,
-      p_request_queue       IN  VARCHAR2,
-      p_response_queue      IN  VARCHAR2,
-      p_timeout_sec         IN  PLS_INTEGER,
-      p_bus_correlation_id  IN  VARCHAR2,
-      p_result              OUT MI_ResultCtx.exec_Result_t
-   )
-   IS
-      l_called_at         TIMESTAMP WITH TIME ZONE := SYSTIMESTAMP;
-      l_send_x            CLOB;
-      l_transport_entered PLS_INTEGER := 0;
-      l_transport_invoked BOOLEAN := FALSE;
-      l_log               MI_Logger_T := g_log;
-   BEGIN
-      l_log.context(
-         p_inf_id         => p_inf_id,
-         p_req_id         => p_req_id,
-         p_correlation_id => p_request_correlation
-      );
-
-      SELECT XMLSERIALIZE(
-                DOCUMENT XMLELEMENT(
-                   "XXLRequest",
-                   XMLATTRIBUTES(
-                      '1.0' AS "version",
-                      'send' AS "action",
-                      'auto' AS "mode",
-                      TO_CHAR(p_req_id, 'TM9') AS "req_id",
-                      TO_CHAR(p_wsp_id, 'TM9') AS "wsp_id",
-                      TO_CHAR(p_inf_id, 'TM9') AS "inf_id",
-                      p_request_correlation AS "correlation_id",
-                      p_external_uuid AS "external_uuid",
-                      p_call_uuid AS "call_uuid",
-                      TO_CHAR(
-                         l_called_at,
-                         'YYYY-MM-DD"T"HH24:MI:SS.FF3 TZH:TZM'
-                      ) AS "timestamp"
-                   )
-                )
-                AS CLOB
-             )
-        INTO l_send_x
-        FROM DUAL;
-
-      l_log.debug(
-         p_message_text => 'XXLRequest prepared',
-         p_action_code  => 'prepare',
-         p_details_text =>
-               'call_uuid='
-            || p_call_uuid
-            || '; request_size='
-            || DBMS_LOB.getlength(l_send_x)
-      );
-
-      l_transport_invoked := TRUE;
-
-      call_Transport(
-         p_request_xml         => l_send_x,
-         p_expected_action     => 'send',
-         p_request_queue       => p_request_queue,
-         p_response_queue      => p_response_queue,
-         p_gate_alias          => p_gate_alias,
-         p_timeout_sec         => p_timeout_sec,
-         p_correlation_id      => p_bus_correlation_id,
-         p_bus_error_code      => cErr_Request_Bus_Return,
-         p_empty_response_code => cErr_Request_Empty_Response,
-         p_parse_error_code    => cErr_Request_Response_Parse,
-         p_result              => p_result
-      );
-
-      BEGIN
-         l_transport_entered :=
-            NVL(
-               TO_NUMBER(p_result.parameters('transport_entered')),
-               1
-            );
-      EXCEPTION
-         WHEN OTHERS THEN
-            /*
-               call_Transport has returned. If its evidence cannot be read,
-               fail closed: transport may have been entered.
-            */
-            l_transport_entered := 1;
-      END;
-
-      put_Common_Context(
-         p_result, p_call_uuid,
-         p_scope     => 'REQUEST',
-         p_action    => 'send',
-         p_inf_id    => p_inf_id,
-         p_req_id    => p_req_id,
-         p_status_cd => p_status_cd
-      );
-
-   EXCEPTION
-      WHEN OTHERS THEN
-         p_result :=
-            MI_ResultCtx.from_Exception(
-               p_sqlcode => SQLCODE,
-               p_sqlerrm => SQLERRM,
-               p_code    => cErr_Request_Unexpected,
-               p_info    => 'Unexpected error preparing MI_mbus request'
-            );
-         put_Parameter(
-            p_result,
-            'transport_entered',
-            CASE
-               WHEN l_transport_invoked OR l_transport_entered = 1
-               THEN '1'
-               ELSE '0'
-            END
-         );
-         put_Parameter(
-            p_result,
-            'delivery_outcome',
-            CASE
-               WHEN l_transport_invoked OR l_transport_entered = 1
-               THEN 'UNKNOWN'
-               ELSE 'NOT_ENQUEUED'
-            END
-         );
-         put_Parameter(p_result, 'retry_safe', '0');
-         put_Common_Context(
-            p_result, p_call_uuid,
-            p_inf_id => p_inf_id,
-            p_req_id => p_req_id
-         );
-   END send_Request_Transport;
 
 
    ---------------------------------------------------------------------------
@@ -843,14 +535,18 @@ IS
       l_status_cd       MI_REQ.STATUS_CD%TYPE;
       l_correlation_id  MI_REQ.CORRELATION_ID%TYPE;
       l_external_uuid   MI_REQ.EXTERNAL_UUID%TYPE;
-      l_mi_0600_req_id  MI_0600.REQ_ID%TYPE;
 
       l_call_uuid       VARCHAR2(36) := MI_Utils.uuid_V7;
+      l_called_at       TIMESTAMP WITH TIME ZONE := SYSTIMESTAMP;
+      l_send_x          CLOB;
+
       l_gate_alias      VARCHAR2(100);
       l_request_queue   VARCHAR2(100);
       l_response_queue  VARCHAR2(100);
       l_timeout_sec     PLS_INTEGER;
       l_settings_valid  BOOLEAN;
+
+      l_log             MI_Logger_T := g_log;
    BEGIN
       IF p_req_id IS NULL THEN
          p_result :=
@@ -862,34 +558,20 @@ IS
          RETURN;
       END IF;
 
-      IF p_req_id = 351 THEN
-         p_result :=
-            failure_Result(
-               p_code => cErr_Request_351,
-               p_info => 'REQ_ID=351 is permanently excluded from resend'
-            );
-         put_Common_Context(p_result, l_call_uuid, p_req_id => p_req_id);
-         RETURN;
-      END IF;
-
       BEGIN
          SELECT r.INF_ID,
                 i.WSP_ID,
                 r.STATUS_CD,
                 TRIM(r.CORRELATION_ID),
-                TRIM(r.EXTERNAL_UUID),
-                h.REQ_ID
+                TRIM(r.EXTERNAL_UUID)
            INTO l_inf_id,
                 l_wsp_id,
                 l_status_cd,
                 l_correlation_id,
-                l_external_uuid,
-                l_mi_0600_req_id
+                l_external_uuid
            FROM MI_REQ r
            JOIN MI_INF i
              ON i.INF_ID = r.INF_ID
-           LEFT JOIN MI_0600 h
-             ON h.REQ_ID = r.REQ_ID
           WHERE r.REQ_ID = p_req_id;
 
       EXCEPTION
@@ -902,6 +584,12 @@ IS
             put_Common_Context(p_result, l_call_uuid, p_req_id => p_req_id);
             RETURN;
       END;
+
+      l_log.context(
+         p_inf_id         => l_inf_id,
+         p_req_id         => p_req_id,
+         p_correlation_id => l_correlation_id
+      );
 
       IF l_status_cd = MI_Request_Api.STATUS_BUSY THEN
          p_result :=
@@ -961,25 +649,6 @@ IS
          RETURN;
       END IF;
 
-      /*
-         Atomic package-level bypass guard: it depends only on flow identity
-         and status, never on the existence of an attempt row.
-      */
-      IF l_inf_id = 601 AND l_mi_0600_req_id IS NOT NULL THEN
-         p_result :=
-            failure_Result(
-               p_code => cErr_Request_Managed_601,
-               p_info => 'Outgoing MI_0600/601 requires managed claim and dispatch'
-            );
-         put_Common_Context(
-            p_result, l_call_uuid,
-            p_inf_id    => l_inf_id,
-            p_req_id    => p_req_id,
-            p_status_cd => l_status_cd
-         );
-         RETURN;
-      END IF;
-
       IF l_inf_id IS NULL
          OR l_wsp_id IS NULL
          OR l_correlation_id IS NULL
@@ -1019,20 +688,60 @@ IS
          RETURN;
       END IF;
 
-      send_Request_Transport(
-         p_req_id              => p_req_id,
-         p_inf_id              => l_inf_id,
-         p_wsp_id              => l_wsp_id,
-         p_status_cd           => l_status_cd,
-         p_request_correlation => l_correlation_id,
-         p_external_uuid       => l_external_uuid,
-         p_call_uuid           => l_call_uuid,
-         p_gate_alias          => l_gate_alias,
+      SELECT XMLSERIALIZE(
+                DOCUMENT XMLELEMENT(
+                   "XXLRequest",
+                   XMLATTRIBUTES(
+                      '1.0' AS "version",
+                      'send' AS "action",
+                      'auto' AS "mode",
+                      TO_CHAR(p_req_id, 'TM9') AS "req_id",
+                      TO_CHAR(l_wsp_id, 'TM9') AS "wsp_id",
+                      TO_CHAR(l_inf_id, 'TM9') AS "inf_id",
+                      l_correlation_id AS "correlation_id",
+                      l_external_uuid AS "external_uuid",
+                      l_call_uuid AS "call_uuid",
+                      TO_CHAR(
+                         l_called_at,
+                         'YYYY-MM-DD"T"HH24:MI:SS.FF3 TZH:TZM'
+                      ) AS "timestamp"
+                   )
+                )
+                AS CLOB
+             )
+        INTO l_send_x
+        FROM DUAL;
+
+      l_log.debug(
+         p_message_text => 'XXLRequest prepared',
+         p_action_code  => 'prepare',
+         p_details_text =>
+               'call_uuid='
+            || l_call_uuid
+            || '; request_size='
+            || DBMS_LOB.getlength(l_send_x)
+      );
+
+      call_Transport(
+         p_request_xml         => l_send_x,
+         p_expected_action     => 'send',
          p_request_queue       => l_request_queue,
          p_response_queue      => l_response_queue,
+         p_gate_alias          => l_gate_alias,
          p_timeout_sec         => l_timeout_sec,
-         p_bus_correlation_id  => NULL,
+         p_bus_error_code      => cErr_Request_Bus_Return,
+         p_empty_response_code => cErr_Request_Empty_Response,
+         p_parse_error_code    => cErr_Request_Response_Parse,
          p_result              => p_result
+      );
+
+      put_Common_Context(
+         p_result, l_call_uuid,
+         p_scope     => 'REQUEST',
+         p_action    => 'send',
+         p_inf_id    => l_inf_id,
+         p_req_id    => p_req_id,
+         p_status_cd => l_status_cd
       );
 
    EXCEPTION
@@ -1051,161 +760,6 @@ IS
          );
    END send_Request;
 
-
-   ---------------------------------------------------------------------------
-   PROCEDURE send_Claimed_Request (
-      p_req_id          IN  MI_REQ.REQ_ID%TYPE,
-      p_call_uuid       IN  VARCHAR2,
-      p_dispatch_token  IN  VARCHAR2,
-      p_result          OUT MI_ResultCtx.exec_Result_t
-   )
-   IS
-      l_inf_id             MI_REQ.INF_ID%TYPE;
-      l_wsp_id             MI_INF.WSP_ID%TYPE;
-      l_status_cd          MI_REQ.STATUS_CD%TYPE;
-      l_correlation_id     MI_REQ.CORRELATION_ID%TYPE;
-      l_external_uuid      MI_REQ.EXTERNAL_UUID%TYPE;
-      l_dsend_stamp        MI_0600.DSEND_STAMP%TYPE;
-      l_zip_size           PLS_INTEGER;
-
-      l_state_cd           MI_0600_SEND_ATTEMPT.STATE_CD%TYPE;
-      l_token_hash         MI_0600_SEND_ATTEMPT.TOKEN_HASH%TYPE;
-      l_supplied_hash      RAW(32);
-      l_gate_alias         MI_0600_SEND_ATTEMPT.GATE_ALIAS%TYPE;
-      l_request_queue      MI_0600_SEND_ATTEMPT.REQUEST_QUEUE%TYPE;
-      l_response_queue     MI_0600_SEND_ATTEMPT.RESPONSE_QUEUE%TYPE;
-      l_timeout_sec        PLS_INTEGER;
-      l_bus_correlation_id MI_0600_SEND_ATTEMPT.BUS_CORRELATION_ID%TYPE;
-      l_transport_invoked  BOOLEAN := FALSE;
-   BEGIN
-      IF p_req_id IS NULL
-         OR p_req_id = 351
-         OR TRIM(p_call_uuid) IS NULL
-         OR p_dispatch_token IS NULL
-      THEN
-         p_result :=
-            failure_Result(
-               p_code => cErr_Request_Protected,
-               p_info => 'Managed dispatch identity is invalid'
-            );
-         put_Parameter(p_result, 'transport_entered', '0');
-         RETURN;
-      END IF;
-
-      BEGIN
-         SELECT r.INF_ID,
-                i.WSP_ID,
-                r.STATUS_CD,
-                TRIM(r.CORRELATION_ID),
-                TRIM(r.EXTERNAL_UUID),
-                h.DSEND_STAMP,
-                DBMS_LOB.getlength(h.BZIP_DATA),
-                a.STATE_CD,
-                a.TOKEN_HASH,
-                a.GATE_ALIAS,
-                a.REQUEST_QUEUE,
-                a.RESPONSE_QUEUE,
-                a.TIMEOUT_SEC,
-                a.BUS_CORRELATION_ID
-           INTO l_inf_id,
-                l_wsp_id,
-                l_status_cd,
-                l_correlation_id,
-                l_external_uuid,
-                l_dsend_stamp,
-                l_zip_size,
-                l_state_cd,
-                l_token_hash,
-                l_gate_alias,
-                l_request_queue,
-                l_response_queue,
-                l_timeout_sec,
-                l_bus_correlation_id
-           FROM MI_REQ r
-           JOIN MI_INF i
-             ON i.INF_ID = r.INF_ID
-           JOIN MI_0600 h
-             ON h.REQ_ID = r.REQ_ID
-           JOIN MI_0600_SEND_ATTEMPT a
-             ON a.REQ_ID = r.REQ_ID
-          WHERE r.REQ_ID = p_req_id
-            AND TRIM(a.CALL_UUID) = TRIM(p_call_uuid);
-
-      EXCEPTION
-         WHEN NO_DATA_FOUND THEN
-            p_result :=
-               failure_Result(
-                  p_code => cErr_Request_Protected,
-                  p_info => 'Committed managed attempt was not found'
-               );
-            put_Parameter(p_result, 'transport_entered', '0');
-            RETURN;
-      END;
-
-      SELECT STANDARD_HASH(p_dispatch_token, 'SHA256')
-        INTO l_supplied_hash
-        FROM DUAL;
-
-      IF l_inf_id <> 601
-         OR l_status_cd <> MI_Request_Api.STATUS_NEW
-         OR l_dsend_stamp IS NOT NULL
-         OR NVL(l_zip_size, 0) = 0
-         OR l_state_cd <> 'C'
-         OR UTL_RAW.COMPARE(l_token_hash, l_supplied_hash) <> 0
-      THEN
-         p_result :=
-            failure_Result(
-               p_code => cErr_Request_Protected,
-               p_info => 'Managed dispatch capability or attempt state is invalid'
-            );
-         put_Parameter(p_result, 'transport_entered', '0');
-         RETURN;
-      END IF;
-
-      l_transport_invoked := TRUE;
-
-      send_Request_Transport(
-         p_req_id              => p_req_id,
-         p_inf_id              => l_inf_id,
-         p_wsp_id              => l_wsp_id,
-         p_status_cd           => l_status_cd,
-         p_request_correlation => l_correlation_id,
-         p_external_uuid       => l_external_uuid,
-         p_call_uuid           => TRIM(p_call_uuid),
-         p_gate_alias          => l_gate_alias,
-         p_request_queue       => l_request_queue,
-         p_response_queue      => l_response_queue,
-         p_timeout_sec         => l_timeout_sec,
-         p_bus_correlation_id  => l_bus_correlation_id,
-         p_result              => p_result
-      );
-
-   EXCEPTION
-      WHEN OTHERS THEN
-         p_result :=
-            MI_ResultCtx.from_Exception(
-               p_sqlcode => SQLCODE,
-               p_sqlerrm => SQLERRM,
-               p_code    => cErr_Request_Unexpected,
-               p_info    => 'Unexpected error in controlled request dispatch'
-            );
-         put_Parameter(
-            p_result,
-            'transport_entered',
-            CASE WHEN l_transport_invoked THEN '1' ELSE '0' END
-         );
-         put_Parameter(
-            p_result,
-            'delivery_outcome',
-            CASE WHEN l_transport_invoked THEN 'UNKNOWN' ELSE 'NOT_ENQUEUED' END
-         );
-         put_Parameter(p_result, 'retry_safe', '0');
-         put_Common_Context(
-            p_result, p_call_uuid,
-            p_inf_id => l_inf_id,
-            p_req_id => p_req_id
-         );
-   END send_Claimed_Request;
 
    ---------------------------------------------------------------------------
    PROCEDURE send_Response (
@@ -1764,4 +1318,3 @@ IS
 
 END MI_mbus;
 /
-
