@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_mbus
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.1.0} {18.11.2026} Sulimoff$';
+      '$Id: {1.2.0} {18.11.2026} Sulimoff$';
 
 
    RESULT_ALREADY_IN_PROGRESS CONSTANT VARCHAR2(100) := 'ALREADY_IN_PROGRESS';
@@ -397,6 +397,7 @@ IS
    ---------------------------------------------------------------------------
    PROCEDURE call_Transport (
       p_request_xml         IN  CLOB,
+      p_expected_action     IN  VARCHAR2,
       p_request_queue       IN  VARCHAR2,
       p_response_queue      IN  VARCHAR2,
       p_gate_alias          IN  VARCHAR2,
@@ -493,7 +494,11 @@ IS
          put_Parameter(p_result, 'retry_safe', '0');
       ELSE
          BEGIN
-            p_result := MI_ResultCtx.result_From_Xml(l_response_xml);
+            p_result :=
+               MI_ResultCtx.result_From_Xml(
+                  p_xml             => l_response_xml,
+                  p_expected_action => p_expected_action
+               );
          EXCEPTION
             WHEN OTHERS THEN
                p_result :=
@@ -719,6 +724,7 @@ IS
 
       call_Transport(
          p_request_xml         => l_send_x,
+         p_expected_action     => 'send',
          p_request_queue       => l_request_queue,
          p_response_queue      => l_response_queue,
          p_gate_alias          => l_gate_alias,
@@ -954,6 +960,7 @@ IS
 
       call_Transport(
          p_request_xml         => l_send_x,
+         p_expected_action     => 'send',
          p_request_queue       => l_request_queue,
          p_response_queue      => l_response_queue,
          p_gate_alias          => l_gate_alias,
@@ -1267,6 +1274,7 @@ IS
 
       call_Transport(
          p_request_xml         => l_send_x,
+         p_expected_action     => l_action,
          p_request_queue       => l_request_queue,
          p_response_queue      => l_response_queue,
          p_gate_alias          => l_gate_alias,
