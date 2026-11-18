@@ -21,6 +21,8 @@ DECLARE
    l_status_before   NUMBER;
    l_status_after    NUMBER;
    l_count           PLS_INTEGER;
+   l_parser_error    BOOLEAN;
+   l_response_xml    CLOB;
 
 
    ---------------------------------------------------------------------------
@@ -107,6 +109,87 @@ BEGIN
    SAVEPOINT before_mi_mbus_smoke;
 
    ---------------------------------------------------------------------------
+   DBMS_OUTPUT.put_line('0. XXLResponse parser preserves structured result');
+
+   l_response_xml :=
+      TO_CLOB(
+         q'~<XXLResponse version="1.0" action="send" is_success="true" result_code="SEND_PUBLISHED" result_info="Published"><details>ok</details><parameters>{"published":true,"attempt":2,"name":"A\u0026B","nested":{"x":1},"none":null}</parameters></XXLResponse>~'
+      );
+
+   l_result := MI_ResultCtx.result_From_Xml(l_response_xml);
+
+   assert_Code(l_result, 'SEND_PUBLISHED', TRUE, 'successful XXLResponse');
+   assert_True(
+      DBMS_LOB.SUBSTR(l_result.result_details, 100, 1) = 'ok',
+      'XXLResponse details were not parsed'
+   );
+   assert_True(
+      l_result.parameters.EXISTS('published')
+      AND l_result.parameters('published') = 'true',
+      'boolean response parameter was not parsed'
+   );
+   assert_True(
+      l_result.parameters.EXISTS('attempt')
+      AND l_result.parameters('attempt') = '2',
+      'numeric response parameter was not parsed'
+   );
+   assert_True(
+      l_result.parameters.EXISTS('name')
+      AND l_result.parameters('name') = 'A&B',
+      'string response parameter was not decoded'
+   );
+   assert_True(
+      l_result.parameters.EXISTS('nested')
+      AND l_result.parameters('nested') = '{"x":1}',
+      'nested response parameter was not preserved as JSON'
+   );
+   assert_True(
+      l_result.parameters.EXISTS('none')
+      AND l_result.parameters('none') IS NULL,
+      'null response parameter was not preserved'
+   );
+   assert_True(
+      l_result.parameters('xml_version') = '1.0'
+      AND l_result.parameters('xml_action') = 'send',
+      'XXLResponse metadata was not preserved'
+   );
+
+   l_response_xml :=
+      TO_CLOB(
+         q'~<XXLResponse version="1.0" action="send" is_success="false" result_code="SEND_FAILED" result_info="Failed" cause_code="REMOTE_ERROR" cause_info="Remote failure"><details>business details</details><cause_details>cause details</cause_details><parameters>{}</parameters></XXLResponse>~'
+      );
+
+   l_result := MI_ResultCtx.result_From_Xml(l_response_xml);
+
+   assert_Code(l_result, 'SEND_FAILED', FALSE, 'failed XXLResponse');
+   assert_True(
+      l_result.cause_code = 'REMOTE_ERROR'
+      AND l_result.cause_info = 'Remote failure',
+      'XXLResponse cause was not parsed'
+   );
+   assert_True(
+      DBMS_LOB.SUBSTR(l_result.cause_details, 100, 1) = 'cause details',
+      'XXLResponse cause_details were not parsed'
+   );
+
+   l_parser_error := FALSE;
+
+   BEGIN
+      l_result := MI_ResultCtx.result_From_Xml(TO_CLOB('<not-a-response/>'));
+   EXCEPTION
+      WHEN OTHERS THEN
+         IF SQLCODE = -20011 THEN
+            l_parser_error := TRUE;
+         ELSE
+            RAISE;
+         END IF;
+   END;
+
+   assert_True(l_parser_error, 'invalid XXLResponse was not rejected');
+
+   DBMS_OUTPUT.put_line('   OK');
+
+   ---------------------------------------------------------------------------
    DBMS_OUTPUT.put_line('1. Required test information type exists');
 
    SELECT COUNT(*)
@@ -143,7 +226,7 @@ BEGIN
 
    ---------------------------------------------------------------------------
    DBMS_OUTPUT.put_line(
-      '3. NEW request is prepared, transport is unsupported, status unchanged'
+      '3. NEW request fixture is created without invoking live Multi-Bus'
    );
 
    l_create_result :=
@@ -167,31 +250,6 @@ BEGIN
      FROM MI_REQ
     WHERE REQ_ID = l_req_id;
 
-   MI_mbus.send_Request(
-      p_req_id => l_req_id,
-      p_result => l_result
-   );
-
-   assert_Code(
-      l_result,
-      MI_mbus.RESULT_MBUS_NOT_IMPLEMENTED,
-      FALSE,
-      'prepared request'
-   );
-   assert_True(
-      l_result.parameters.EXISTS('request_prepared'),
-      'request_prepared marker is absent'
-   );
-   assert_True(
-      l_result.parameters('request_prepared') = '1',
-      'request_prepared marker is invalid'
-   );
-   assert_True(
-      l_result.parameters.EXISTS('request_size')
-      AND TO_NUMBER(l_result.parameters('request_size')) > 0,
-      'request_size is absent or invalid'
-   );
-
    SELECT STATUS_CD
      INTO l_status_after
      FROM MI_REQ
@@ -203,7 +261,7 @@ BEGIN
    );
    assert_True(
       l_status_after = l_status_before,
-      'send_Request changed request status'
+      'request fixture status changed unexpectedly'
    );
 
    DBMS_OUTPUT.put_line('   OK');
@@ -326,7 +384,7 @@ BEGIN
 
    ---------------------------------------------------------------------------
    DBMS_OUTPUT.put_line(
-      '7. READY response is prepared, transport is unsupported, status unchanged'
+      '7. READY response fixture is created without invoking live Multi-Bus'
    );
 
    l_create_result := MI_Response_Api.to_Ready(l_rsp_id);
@@ -340,23 +398,6 @@ BEGIN
      FROM MI_RSP
     WHERE RSP_ID = l_rsp_id;
 
-   MI_mbus.send_Response(
-      p_rsp_id => l_rsp_id,
-      p_result => l_result
-   );
-
-   assert_Code(
-      l_result,
-      MI_mbus.RESULT_MBUS_NOT_IMPLEMENTED,
-      FALSE,
-      'READY response'
-   );
-   assert_True(
-      l_result.parameters.EXISTS('request_prepared')
-      AND l_result.parameters('request_prepared') = '1',
-      'response request was not prepared'
-   );
-
    SELECT STATUS_CD
      INTO l_status_after
      FROM MI_RSP
@@ -368,7 +409,7 @@ BEGIN
    );
    assert_True(
       l_status_after = l_status_before,
-      'send_Response changed READY status'
+      'response fixture status changed unexpectedly'
    );
 
    DBMS_OUTPUT.put_line('   OK');
@@ -461,57 +502,38 @@ BEGIN
 
 
    ---------------------------------------------------------------------------
-   DBMS_OUTPUT.put_line(
-      '10. Valid direct command is escaped/prepared and transport is unsupported'
-   );
+   DBMS_OUTPUT.put_line('10. Direct command validates request context');
 
    MI_mbus.send_Command(
-      p_result     => l_result,
-      p_action     => 'refresh',
-      p_inf_id     => 601,
-      p_req_id     => l_req_id,
-      p_parameters => '{"secret":"<&"}'
+      p_result => l_result,
+      p_action => 'refresh',
+      p_req_id => l_missing_req_id
    );
 
    assert_Code(
       l_result,
-      MI_mbus.RESULT_MBUS_NOT_IMPLEMENTED,
+      'MI_MBUS.SEND_COMMAND#REQUEST_NOT_FOUND',
       FALSE,
-      'valid direct command'
+      'missing command request'
    );
-   assert_True(
-      l_result.parameters.EXISTS('request_prepared')
-      AND l_result.parameters('request_prepared') = '1',
-      'direct command was not prepared'
-   );
-   assert_True(
-      l_result.parameters.EXISTS('scope')
-      AND l_result.parameters('scope') = 'REQUEST',
-      'direct command scope is not REQUEST'
-   );
-
-   DBMS_OUTPUT.put_line('   OK');
-
-
-   ---------------------------------------------------------------------------
-   DBMS_OUTPUT.put_line('11. NULL parameters mean empty JSON object');
 
    MI_mbus.send_Command(
-      p_result     => l_result,
-      p_action     => 'refresh',
-      p_parameters => NULL
+      p_result => l_result,
+      p_action => 'refresh',
+      p_inf_id => 999999999,
+      p_req_id => l_req_id
    );
 
    assert_Code(
       l_result,
-      MI_mbus.RESULT_MBUS_NOT_IMPLEMENTED,
+      'MI_MBUS.SEND_COMMAND#INF_ID_MISMATCH',
       FALSE,
-      'NULL command parameters'
+      'command request/inf mismatch'
    );
    assert_True(
-      l_result.parameters.EXISTS('parameters_size')
-      AND l_result.parameters('parameters_size') = '2',
-      'NULL parameters were not normalized to {}'
+      l_result.parameters.EXISTS('inf_id')
+      AND TO_NUMBER(l_result.parameters('inf_id')) = 601,
+      'resolved request information type is absent'
    );
 
    DBMS_OUTPUT.put_line('   OK');
