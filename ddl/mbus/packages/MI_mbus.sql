@@ -2,12 +2,13 @@ CREATE OR REPLACE PACKAGE MI_mbus
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.0.0} {17.11.2026} Sulimoff$';
+      '$Id: {1.1.0} {18.11.2026} Sulimoff$';
 
 
    RESULT_ALREADY_IN_PROGRESS CONSTANT VARCHAR2(100) := 'ALREADY_IN_PROGRESS';
    RESULT_ALREADY_SENT        CONSTANT VARCHAR2(100) := 'ALREADY_SENT';
    RESULT_ALREADY_COMPLETED   CONSTANT VARCHAR2(100) := 'ALREADY_COMPLETED';
+   /* Оставлено для source compatibility; transport больше не возвращает его. */
    RESULT_MBUS_NOT_IMPLEMENTED CONSTANT VARCHAR2(100) := 'MBUS_NOT_IMPLEMENTED';
 
 
@@ -82,6 +83,12 @@ IS
       'MI_MBUS.SEND_REQUEST#INVALID_IDENTITY';
    cErr_Request_Unexpected CONSTANT VARCHAR2(100) :=
       'MI_MBUS.SEND_REQUEST#UNEXPECTED';
+   cErr_Request_Bus_Return CONSTANT VARCHAR2(100) :=
+      'MI_MBUS.SEND_REQUEST#X_TO_XXL_TRANSPORT_ERROR';
+   cErr_Request_Empty_Response CONSTANT VARCHAR2(100) :=
+      'MI_MBUS.SEND_REQUEST#XXL_RESPONSE_EMPTY';
+   cErr_Request_Response_Parse CONSTANT VARCHAR2(100) :=
+      'MI_MBUS.SEND_REQUEST#XXL_RESPONSE_PARSE_ERROR';
 
    cErr_Response_Not_Found CONSTANT VARCHAR2(100) :=
       'MI_MBUS.SEND_RESPONSE#RESPONSE_NOT_FOUND';
@@ -91,11 +98,21 @@ IS
       'MI_MBUS.SEND_RESPONSE#INVALID_IDENTITY';
    cErr_Response_Unexpected CONSTANT VARCHAR2(100) :=
       'MI_MBUS.SEND_RESPONSE#UNEXPECTED';
+   cErr_Response_Bus_Return CONSTANT VARCHAR2(100) :=
+      'MI_MBUS.SEND_RESPONSE#X_TO_XXL_TRANSPORT_ERROR';
+   cErr_Response_Empty_Response CONSTANT VARCHAR2(100) :=
+      'MI_MBUS.SEND_RESPONSE#XXL_RESPONSE_EMPTY';
+   cErr_Response_Response_Parse CONSTANT VARCHAR2(100) :=
+      'MI_MBUS.SEND_RESPONSE#XXL_RESPONSE_PARSE_ERROR';
 
    cErr_Command_Invalid_Inf CONSTANT VARCHAR2(100) :=
       'MI_MBUS.SEND_COMMAND#INVALID_INF_ID';
    cErr_Command_Inf_Not_Found CONSTANT VARCHAR2(100) :=
       'MI_MBUS.SEND_COMMAND#INF_NOT_FOUND';
+   cErr_Command_Request_Not_Found CONSTANT VARCHAR2(100) :=
+      'MI_MBUS.SEND_COMMAND#REQUEST_NOT_FOUND';
+   cErr_Command_Inf_Mismatch CONSTANT VARCHAR2(100) :=
+      'MI_MBUS.SEND_COMMAND#INF_ID_MISMATCH';
    cErr_Command_Action_Required CONSTANT VARCHAR2(100) :=
       'MI_MBUS.SEND_COMMAND#ACTION_REQUIRED';
    cErr_Command_Invalid_Action CONSTANT VARCHAR2(100) :=
@@ -104,6 +121,12 @@ IS
       'MI_MBUS.SEND_COMMAND#INVALID_PARAMETERS';
    cErr_Command_Unexpected CONSTANT VARCHAR2(100) :=
       'MI_MBUS.SEND_COMMAND#UNEXPECTED';
+   cErr_Command_Bus_Return CONSTANT VARCHAR2(100) :=
+      'MI_MBUS.SEND_COMMAND#X_TO_XXL_TRANSPORT_ERROR';
+   cErr_Command_Empty_Response CONSTANT VARCHAR2(100) :=
+      'MI_MBUS.SEND_COMMAND#XXL_RESPONSE_EMPTY';
+   cErr_Command_Response_Parse CONSTANT VARCHAR2(100) :=
+      'MI_MBUS.SEND_COMMAND#XXL_RESPONSE_PARSE_ERROR';
 
    cErr_Transport_Config CONSTANT VARCHAR2(100) :=
       'MI_MBUS.TRANSPORT#INVALID_CONFIGURATION';
@@ -218,48 +241,137 @@ IS
 
 
    ---------------------------------------------------------------------------
+   FUNCTION scoped_Property (
+      p_inf_id      IN MI_INF.INF_ID%TYPE,
+      p_wsp_id      IN MI_WSP.WSP_ID%TYPE,
+      p_property    IN VARCHAR2,
+      p_def_value   IN VARCHAR2 DEFAULT NULL
+   )
+      RETURN VARCHAR2
+   IS
+      l_value VARCHAR2(32767);
+   BEGIN
+      l_value :=
+         MI_Prp.get_Sys_Property(
+            p_prp_id    => p_property,
+            p_def_value => p_def_value
+         );
+
+      IF p_wsp_id IS NOT NULL THEN
+         l_value :=
+            MI_Prp.get_Wsp_Property(
+               p_wsp_id    => p_wsp_id,
+               p_prp_id    => p_property,
+               p_def_value => l_value
+            );
+      END IF;
+
+      IF p_inf_id IS NOT NULL THEN
+         l_value :=
+            MI_Prp.get_Inf_Property(
+               p_inf_id    => p_inf_id,
+               p_prp_id    => p_property,
+               p_def_value => l_value
+            );
+      END IF;
+
+      RETURN TRIM(l_value);
+   END scoped_Property;
+
+
+   ---------------------------------------------------------------------------
    PROCEDURE resolve_Transport_Settings (
+      p_inf_id          IN  MI_INF.INF_ID%TYPE,
+      p_wsp_id          IN  MI_WSP.WSP_ID%TYPE,
       p_gate_alias      OUT VARCHAR2,
-      p_request_ttl_ms  OUT PLS_INTEGER,
+      p_request_queue   OUT VARCHAR2,
+      p_response_queue  OUT VARCHAR2,
+      p_timeout_sec     OUT PLS_INTEGER,
       p_result          OUT MI_ResultCtx.exec_Result_t,
       p_is_valid        OUT BOOLEAN
    )
    IS
-      l_timeout_text VARCHAR2(100);
-      l_timeout_num  NUMBER;
+      l_gate_alias      VARCHAR2(32767);
+      l_request_queue   VARCHAR2(32767);
+      l_response_queue  VARCHAR2(32767);
+      l_timeout_text    VARCHAR2(32767);
+      l_timeout_num     NUMBER;
+
+      PROCEDURE invalid_Property (
+         p_property  IN VARCHAR2,
+         p_info      IN VARCHAR2
+      )
+      IS
+      BEGIN
+         p_result :=
+            failure_Result(
+               p_code => cErr_Transport_Config,
+               p_info => p_info
+            );
+         put_Parameter(p_result, 'property_name', p_property);
+      END invalid_Property;
    BEGIN
       p_is_valid := FALSE;
 
-      p_gate_alias :=
-         TRIM(
-            MI_Prp.get_Sys_Property(
-               p_prp_id    => 'MBUS_GATE',
-               p_def_value => cMultiBus_Gate
-            )
+      l_gate_alias :=
+         scoped_Property(
+            p_inf_id    => p_inf_id,
+            p_wsp_id    => p_wsp_id,
+            p_property  => 'MBUS_GATE',
+            p_def_value => cMultiBus_Gate
+         );
+      l_request_queue :=
+         scoped_Property(
+            p_inf_id   => p_inf_id,
+            p_wsp_id   => p_wsp_id,
+            p_property => 'MBUS_REQUEST_QUEUE'
+         );
+      l_response_queue :=
+         scoped_Property(
+            p_inf_id   => p_inf_id,
+            p_wsp_id   => p_wsp_id,
+            p_property => 'MBUS_RESPONSE_QUEUE'
+         );
+      l_timeout_text :=
+         scoped_Property(
+            p_inf_id    => p_inf_id,
+            p_wsp_id    => p_wsp_id,
+            p_property  => 'MBUS_REQUEST_TIMEOUT_SEC',
+            p_def_value => '30'
          );
 
-      IF p_gate_alias IS NULL THEN
-         p_gate_alias := cMultiBus_Gate;
+      IF l_gate_alias IS NULL OR LENGTH(l_gate_alias) > 100 THEN
+         invalid_Property(
+            'MBUS_GATE',
+            'MBUS_GATE is required and must not exceed 100 characters'
+         );
+         RETURN;
       END IF;
 
-      l_timeout_text :=
-         TRIM(
-            MI_Prp.get_Sys_Property(
-               p_prp_id    => 'MBUS_REQUEST_TIMEOUT',
-               p_def_value => '30000'
-            )
+      IF l_request_queue IS NULL OR LENGTH(l_request_queue) > 100 THEN
+         invalid_Property(
+            'MBUS_REQUEST_QUEUE',
+            'MBUS_REQUEST_QUEUE is required and must not exceed 100 characters'
          );
+         RETURN;
+      END IF;
+
+      IF l_response_queue IS NULL OR LENGTH(l_response_queue) > 100 THEN
+         invalid_Property(
+            'MBUS_RESPONSE_QUEUE',
+            'MBUS_RESPONSE_QUEUE is required and must not exceed 100 characters'
+         );
+         RETURN;
+      END IF;
 
       BEGIN
          l_timeout_num := TO_NUMBER(l_timeout_text);
       EXCEPTION
          WHEN VALUE_ERROR OR INVALID_NUMBER THEN
-            p_result :=
-               failure_Result(
-                  p_code => cErr_Transport_Config,
-                  p_info => 'MBUS_REQUEST_TIMEOUT must be a positive integer'
-               );
-            put_Parameter(p_result, 'property_name', 'MBUS_REQUEST_TIMEOUT');
+            invalid_Property(
+               'MBUS_REQUEST_TIMEOUT_SEC',
+               'MBUS_REQUEST_TIMEOUT_SEC must be a positive integer'
+            );
             RETURN;
       END;
 
@@ -267,34 +379,39 @@ IS
          OR l_timeout_num <> TRUNC(l_timeout_num)
          OR l_timeout_num > 2147483647
       THEN
-         p_result :=
-            failure_Result(
-               p_code => cErr_Transport_Config,
-               p_info => 'MBUS_REQUEST_TIMEOUT must be a positive integer'
-            );
-         put_Parameter(p_result, 'property_name', 'MBUS_REQUEST_TIMEOUT');
+         invalid_Property(
+            'MBUS_REQUEST_TIMEOUT_SEC',
+            'MBUS_REQUEST_TIMEOUT_SEC must be a positive integer'
+         );
          RETURN;
       END IF;
 
-      p_request_ttl_ms := l_timeout_num;
+      p_gate_alias := l_gate_alias;
+      p_request_queue := l_request_queue;
+      p_response_queue := l_response_queue;
+      p_timeout_sec := l_timeout_num;
       p_is_valid := TRUE;
    END resolve_Transport_Settings;
 
 
    ---------------------------------------------------------------------------
-   PROCEDURE call_Transport_Stub (
-      p_request_xml     IN  CLOB,
-      p_request_queue   IN  VARCHAR2,
-      p_response_queue  IN  VARCHAR2,
-      p_gate_alias      IN  VARCHAR2,
-      p_request_ttl_ms  IN  PLS_INTEGER,
-      p_result          OUT MI_ResultCtx.exec_Result_t
+   PROCEDURE call_Transport (
+      p_request_xml         IN  CLOB,
+      p_request_queue       IN  VARCHAR2,
+      p_response_queue      IN  VARCHAR2,
+      p_gate_alias          IN  VARCHAR2,
+      p_timeout_sec         IN  PLS_INTEGER,
+      p_bus_error_code      IN  VARCHAR2,
+      p_empty_response_code IN  VARCHAR2,
+      p_parse_error_code    IN  VARCHAR2,
+      p_result              OUT MI_ResultCtx.exec_Result_t
    )
    IS
-      l_result_x     CLOB;
-      l_result_info  VARCHAR2(2000);
-      l_result_corr  VARCHAR2(2000);
-      l_result_code  NUMBER;
+      l_response_xml  CLOB;
+      l_error_message VARCHAR2(32767);
+      l_correlation   VARCHAR2(2000);
+      l_bus_result    NUMBER;
+      l_response_size PLS_INTEGER := 0;
    BEGIN
       IF p_request_xml IS NULL THEN
          p_result :=
@@ -305,44 +422,101 @@ IS
          RETURN;
       END IF;
 
-      /*
-         Единственная точка подстановки реального Oracle Multi-Bus API.
+      BEGIN
+         l_bus_result :=
+            CBS_BUS.QUERY_BUS_CLOB(
+               cSqueue_name => p_request_queue,
+               cDqueue_name => p_response_queue,
+               clXml        => p_request_xml,
+               cCor         => l_correlation,
+               busType      => p_gate_alias,
+               nWait        => p_timeout_sec,
+               SOUT         => l_response_xml,
+               ERRORMSG     => l_error_message
+            );
 
-         Источник queue names в актуальном Oracle DDL пока UNKNOWN. Поэтому
-         p_request_queue/p_response_queue намеренно остаются NULL до
-         подтверждения контракта разработчиком шины. PG-вызов имеет вид:
+      EXCEPTION
+         WHEN OTHERS THEN
+            p_result :=
+               MI_ResultCtx.from_Exception(
+                  p_sqlcode => SQLCODE,
+                  p_sqlerrm => SQLERRM,
+                  p_code    => p_bus_error_code,
+                  p_info    =>
+                     'Oracle Multi-Bus call failed; delivery outcome is unknown'
+               );
+            put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
+            put_Parameter(p_result, 'retry_safe', '0');
+            put_Parameter(p_result, 'request_queue', p_request_queue);
+            put_Parameter(p_result, 'response_queue', p_response_queue);
+            put_Parameter(p_result, 'gate_alias', p_gate_alias);
+            put_Number(p_result, 'timeout_sec', p_timeout_sec);
+            RETURN;
+      END;
 
-         cbs_Bus_X.query_Bus_Text(
-            cSqueue_name => p_request_queue,
-            cDqueue_name => p_response_queue,
-            cXml         => p_request_xml,
-            busType      => p_gate_alias,
-            nWait        => p_request_ttl_ms,
-            SOUT         => l_result_x,
-            ERRORMSG     => l_result_info,
-            cCor         => l_result_corr,
-            res          => l_result_code
-         );
+      IF l_response_xml IS NOT NULL THEN
+         l_response_size := DBMS_LOB.getlength(l_response_xml);
+      END IF;
 
-         После подстановки здесь должны проверяться l_result_code, непустой
-         l_result_x и разбираться XXLResponse. До подтверждения API вызов
-         запрещён: нельзя имитировать успешную публикацию.
-      */
+      g_log.debug(
+         p_message_text => 'Oracle Multi-Bus call completed',
+         p_action_code  => 'transport',
+         p_details_text =>
+               'bus_result_code='
+            || NVL(TO_CHAR(l_bus_result, 'TM9'), '<NULL>')
+            || '; response_size='
+            || TO_CHAR(l_response_size, 'TM9')
+      );
 
-      p_result :=
-         failure_Result(
-            p_code => RESULT_MBUS_NOT_IMPLEMENTED,
-            p_info =>
-               'XXLRequest prepared; Oracle Multi-Bus transport is not implemented'
-         );
+      IF NVL(l_bus_result, -1) <> 0 THEN
+         p_result :=
+            MI_ResultCtx.failure(
+               p_code       => p_bus_error_code,
+               p_info       => 'Oracle Multi-Bus returned an error',
+               p_cause_code => 'MBUS_ERROR',
+               p_cause_info => SUBSTR(l_error_message, 1, 2000)
+            );
+         put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
+         put_Parameter(p_result, 'retry_safe', '0');
+      ELSIF l_response_size = 0
+         OR REGEXP_LIKE(
+               DBMS_LOB.SUBSTR(l_response_xml, 4000, 1),
+               '^[[:space:]]*$'
+            )
+      THEN
+         p_result :=
+            failure_Result(
+               p_code => p_empty_response_code,
+               p_info => 'XXLResponse is empty'
+            );
+         put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
+         put_Parameter(p_result, 'retry_safe', '0');
+      ELSE
+         BEGIN
+            p_result := MI_ResultCtx.result_From_Xml(l_response_xml);
+         EXCEPTION
+            WHEN OTHERS THEN
+               p_result :=
+                  MI_ResultCtx.from_Exception(
+                     p_sqlcode => SQLCODE,
+                     p_sqlerrm => SQLERRM,
+                     p_code    => p_parse_error_code,
+                     p_info    => 'Error parsing XXLResponse'
+                  );
+               put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
+               put_Parameter(p_result, 'retry_safe', '0');
+         END;
+      END IF;
 
-      put_Parameter(p_result, 'request_prepared', '1');
       put_Number(p_result, 'request_size', DBMS_LOB.getlength(p_request_xml));
-      put_Parameter(p_result, 'gate_alias', p_gate_alias);
-      put_Number(p_result, 'request_ttl_ms', p_request_ttl_ms);
+      put_Number(p_result, 'response_size', l_response_size);
+      put_Number(p_result, 'bus_result_code', l_bus_result);
+      put_Parameter(p_result, 'bus_correlation_id', l_correlation);
       put_Parameter(p_result, 'request_queue', p_request_queue);
       put_Parameter(p_result, 'response_queue', p_response_queue);
-   END call_Transport_Stub;
+      put_Parameter(p_result, 'gate_alias', p_gate_alias);
+      put_Number(p_result, 'timeout_sec', p_timeout_sec);
+   END call_Transport;
 
 
    ---------------------------------------------------------------------------
@@ -362,12 +536,10 @@ IS
       l_send_x          CLOB;
 
       l_gate_alias      VARCHAR2(100);
-      l_request_ttl_ms  PLS_INTEGER;
+      l_request_queue   VARCHAR2(100);
+      l_response_queue  VARCHAR2(100);
+      l_timeout_sec     PLS_INTEGER;
       l_settings_valid  BOOLEAN;
-
-      /* Queue source is intentionally UNKNOWN until Oracle bus API review. */
-      l_request_queue   VARCHAR2(200) := NULL;
-      l_response_queue  VARCHAR2(200) := NULL;
 
       l_log             MI_Logger_T := g_log;
    BEGIN
@@ -492,8 +664,12 @@ IS
       END IF;
 
       resolve_Transport_Settings(
+         p_inf_id         => l_inf_id,
+         p_wsp_id         => l_wsp_id,
          p_gate_alias     => l_gate_alias,
-         p_request_ttl_ms => l_request_ttl_ms,
+         p_request_queue  => l_request_queue,
+         p_response_queue => l_response_queue,
+         p_timeout_sec    => l_timeout_sec,
          p_result         => p_result,
          p_is_valid       => l_settings_valid
       );
@@ -541,13 +717,16 @@ IS
             || DBMS_LOB.getlength(l_send_x)
       );
 
-      call_Transport_Stub(
-         p_request_xml    => l_send_x,
-         p_request_queue  => l_request_queue,
-         p_response_queue => l_response_queue,
-         p_gate_alias     => l_gate_alias,
-         p_request_ttl_ms => l_request_ttl_ms,
-         p_result         => p_result
+      call_Transport(
+         p_request_xml         => l_send_x,
+         p_request_queue       => l_request_queue,
+         p_response_queue      => l_response_queue,
+         p_gate_alias          => l_gate_alias,
+         p_timeout_sec         => l_timeout_sec,
+         p_bus_error_code      => cErr_Request_Bus_Return,
+         p_empty_response_code => cErr_Request_Empty_Response,
+         p_parse_error_code    => cErr_Request_Response_Parse,
+         p_result              => p_result
       );
 
       put_Common_Context(
@@ -588,6 +767,7 @@ IS
       l_status_cd             MI_RSP.STATUS_CD%TYPE;
 
       l_inf_id                MI_REQ.INF_ID%TYPE;
+      l_wsp_id                MI_INF.WSP_ID%TYPE;
       l_correlation_id        MI_REQ.CORRELATION_ID%TYPE;
       l_original_request_uuid MI_REQ.ORIGINAL_REQ_UUID%TYPE;
 
@@ -596,12 +776,10 @@ IS
       l_send_x                CLOB;
 
       l_gate_alias            VARCHAR2(100);
-      l_request_ttl_ms        PLS_INTEGER;
+      l_request_queue         VARCHAR2(100);
+      l_response_queue        VARCHAR2(100);
+      l_timeout_sec           PLS_INTEGER;
       l_settings_valid        BOOLEAN;
-
-      /* Queue source is intentionally UNKNOWN until Oracle bus API review. */
-      l_request_queue         VARCHAR2(200) := NULL;
-      l_response_queue        VARCHAR2(200) := NULL;
 
       l_log                   MI_Logger_T := g_log;
    BEGIN
@@ -621,6 +799,7 @@ IS
                 TRIM(s.RSP_UUID),
                 s.STATUS_CD,
                 r.INF_ID,
+                i.WSP_ID,
                 TRIM(r.CORRELATION_ID),
                 TRIM(r.ORIGINAL_REQ_UUID)
            INTO l_req_id,
@@ -628,6 +807,7 @@ IS
                 l_rsp_uuid,
                 l_status_cd,
                 l_inf_id,
+                l_wsp_id,
                 l_correlation_id,
                 l_original_request_uuid
            FROM MI_RSP s
@@ -694,6 +874,7 @@ IS
          OR l_itm_id IS NULL
          OR l_rsp_uuid IS NULL
          OR l_inf_id IS NULL
+         OR l_wsp_id IS NULL
          OR l_correlation_id IS NULL
          OR l_original_request_uuid IS NULL
       THEN
@@ -714,8 +895,12 @@ IS
       END IF;
 
       resolve_Transport_Settings(
+         p_inf_id         => l_inf_id,
+         p_wsp_id         => l_wsp_id,
          p_gate_alias     => l_gate_alias,
-         p_request_ttl_ms => l_request_ttl_ms,
+         p_request_queue  => l_request_queue,
+         p_response_queue => l_response_queue,
+         p_timeout_sec    => l_timeout_sec,
          p_result         => p_result,
          p_is_valid       => l_settings_valid
       );
@@ -767,13 +952,16 @@ IS
             || DBMS_LOB.getlength(l_send_x)
       );
 
-      call_Transport_Stub(
-         p_request_xml    => l_send_x,
-         p_request_queue  => l_request_queue,
-         p_response_queue => l_response_queue,
-         p_gate_alias     => l_gate_alias,
-         p_request_ttl_ms => l_request_ttl_ms,
-         p_result         => p_result
+      call_Transport(
+         p_request_xml         => l_send_x,
+         p_request_queue       => l_request_queue,
+         p_response_queue      => l_response_queue,
+         p_gate_alias          => l_gate_alias,
+         p_timeout_sec         => l_timeout_sec,
+         p_bus_error_code      => cErr_Response_Bus_Return,
+         p_empty_response_code => cErr_Response_Empty_Response,
+         p_parse_error_code    => cErr_Response_Response_Parse,
+         p_result              => p_result
       );
 
       put_Common_Context(
@@ -822,19 +1010,18 @@ IS
       l_scope           VARCHAR2(10);
       l_parameters      CLOB;
       l_is_json         PLS_INTEGER;
-      l_dummy           PLS_INTEGER;
+      l_resolved_inf_id MI_INF.INF_ID%TYPE;
+      l_wsp_id          MI_INF.WSP_ID%TYPE;
 
       l_call_uuid       VARCHAR2(36) := MI_Utils.uuid_V7;
       l_called_at       TIMESTAMP WITH TIME ZONE := SYSTIMESTAMP;
       l_send_x          CLOB;
 
       l_gate_alias      VARCHAR2(100);
-      l_request_ttl_ms  PLS_INTEGER;
+      l_request_queue   VARCHAR2(100);
+      l_response_queue  VARCHAR2(100);
+      l_timeout_sec     PLS_INTEGER;
       l_settings_valid  BOOLEAN;
-
-      /* Queue source is intentionally UNKNOWN until Oracle bus API review. */
-      l_request_queue   VARCHAR2(200) := NULL;
-      l_response_queue  VARCHAR2(200) := NULL;
 
       l_log             MI_Logger_T := g_log;
    BEGIN
@@ -937,10 +1124,57 @@ IS
          RETURN;
       END IF;
 
-      IF p_inf_id IS NOT NULL THEN
+      IF p_req_id IS NOT NULL THEN
          BEGIN
-            SELECT 1
-              INTO l_dummy
+            SELECT r.INF_ID,
+                   i.WSP_ID
+              INTO l_resolved_inf_id,
+                   l_wsp_id
+              FROM MI_REQ r
+              JOIN MI_INF i
+                ON i.INF_ID = r.INF_ID
+             WHERE r.REQ_ID = p_req_id;
+
+         EXCEPTION
+            WHEN NO_DATA_FOUND THEN
+               p_result :=
+                  failure_Result(
+                     p_code => cErr_Command_Request_Not_Found,
+                     p_info => 'Request not found in MI_REQ'
+                  );
+               put_Common_Context(
+                  p_result, l_call_uuid,
+                  p_scope  => l_scope,
+                  p_action => l_action,
+                  p_inf_id => p_inf_id,
+                  p_req_id => p_req_id
+               );
+               RETURN;
+         END;
+
+         IF p_inf_id IS NOT NULL AND p_inf_id <> l_resolved_inf_id THEN
+            p_result :=
+               failure_Result(
+                  p_code => cErr_Command_Inf_Mismatch,
+                  p_info => 'p_inf_id does not match MI_REQ.INF_ID'
+               );
+            put_Common_Context(
+               p_result, l_call_uuid,
+               p_scope  => l_scope,
+               p_action => l_action,
+               p_inf_id => l_resolved_inf_id,
+               p_req_id => p_req_id
+            );
+            put_Number(p_result, 'provided_inf_id', p_inf_id);
+            RETURN;
+         END IF;
+
+      ELSIF p_inf_id IS NOT NULL THEN
+         BEGIN
+            SELECT INF_ID,
+                   WSP_ID
+              INTO l_resolved_inf_id,
+                   l_wsp_id
               FROM MI_INF
              WHERE INF_ID = p_inf_id;
 
@@ -963,8 +1197,12 @@ IS
       END IF;
 
       resolve_Transport_Settings(
+         p_inf_id         => l_resolved_inf_id,
+         p_wsp_id         => l_wsp_id,
          p_gate_alias     => l_gate_alias,
-         p_request_ttl_ms => l_request_ttl_ms,
+         p_request_queue  => l_request_queue,
+         p_response_queue => l_response_queue,
+         p_timeout_sec    => l_timeout_sec,
          p_result         => p_result,
          p_is_valid       => l_settings_valid
       );
@@ -974,7 +1212,7 @@ IS
             p_result, l_call_uuid,
             p_scope  => l_scope,
             p_action => l_action,
-            p_inf_id => p_inf_id,
+            p_inf_id => l_resolved_inf_id,
             p_req_id => p_req_id
          );
          RETURN;
@@ -991,8 +1229,8 @@ IS
                          THEN TO_CHAR(p_req_id, 'TM9')
                       END AS "req_id",
                       CASE
-                         WHEN p_inf_id IS NOT NULL
-                         THEN TO_CHAR(p_inf_id, 'TM9')
+                         WHEN l_resolved_inf_id IS NOT NULL
+                         THEN TO_CHAR(l_resolved_inf_id, 'TM9')
                       END AS "inf_id",
                       l_call_uuid AS "call_uuid",
                       TO_CHAR(
@@ -1008,7 +1246,7 @@ IS
         FROM DUAL;
 
       l_log.context(
-         p_inf_id => p_inf_id,
+         p_inf_id => l_resolved_inf_id,
          p_req_id => p_req_id
       );
       l_log.debug(
@@ -1027,20 +1265,23 @@ IS
             || DBMS_LOB.getlength(l_parameters)
       );
 
-      call_Transport_Stub(
-         p_request_xml    => l_send_x,
-         p_request_queue  => l_request_queue,
-         p_response_queue => l_response_queue,
-         p_gate_alias     => l_gate_alias,
-         p_request_ttl_ms => l_request_ttl_ms,
-         p_result         => p_result
+      call_Transport(
+         p_request_xml         => l_send_x,
+         p_request_queue       => l_request_queue,
+         p_response_queue      => l_response_queue,
+         p_gate_alias          => l_gate_alias,
+         p_timeout_sec         => l_timeout_sec,
+         p_bus_error_code      => cErr_Command_Bus_Return,
+         p_empty_response_code => cErr_Command_Empty_Response,
+         p_parse_error_code    => cErr_Command_Response_Parse,
+         p_result              => p_result
       );
 
       put_Common_Context(
          p_result, l_call_uuid,
          p_scope  => l_scope,
          p_action => l_action,
-         p_inf_id => p_inf_id,
+         p_inf_id => l_resolved_inf_id,
          p_req_id => p_req_id
       );
       put_Number(
@@ -1062,7 +1303,7 @@ IS
             p_result, l_call_uuid,
             p_scope  => l_scope,
             p_action => l_action,
-            p_inf_id => p_inf_id,
+            p_inf_id => l_resolved_inf_id,
             p_req_id => p_req_id
          );
    END send_Command;
