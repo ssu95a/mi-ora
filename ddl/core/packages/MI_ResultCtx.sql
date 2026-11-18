@@ -4,7 +4,7 @@ IS
 
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.1.0} {18.11.2026} Sulimoff$';
+      '$Id: {1.2.0} {18.11.2026} Sulimoff$';
 
 
    cResult_Success CONSTANT VARCHAR2(100) := 'SUCCESS';
@@ -104,11 +104,16 @@ IS
          null           -> NULL.
 
       Имена ограничены контрактом ParameterList_t (100 символов), значения —
-      2000 символов. При усечении значения выставляется служебный параметр
-      xml_parameters_truncated=1.
+      2000 символов. Значение, которое нельзя представить без потери данных,
+      считается ошибкой формата ответа.
+
+      Для успешного ответа p_expected_action, если он задан, должен совпадать
+      с action. Failure-response сохраняется независимо от action: Java error
+      mapper может выставлять для него action по умолчанию.
    */
    FUNCTION result_From_Xml (
-      p_xml IN CLOB
+      p_xml              IN CLOB,
+      p_expected_action  IN VARCHAR2 DEFAULT NULL
    )
       RETURN exec_Result_t;
 
@@ -519,20 +524,46 @@ IS
 
    ---------------------------------------------------------------------------
    FUNCTION decode_Json_String (
-      p_json_string IN VARCHAR2
+      p_json       IN CLOB,
+      p_start_pos  IN PLS_INTEGER,
+      p_end_pos    IN PLS_INTEGER
    )
       RETURN VARCHAR2
    IS
-      l_value VARCHAR2(4000);
+      l_json_value  CLOB;
+      l_value       VARCHAR2(2000);
    BEGIN
+      DBMS_LOB.CREATETEMPORARY(l_json_value, TRUE, DBMS_LOB.CALL);
+      DBMS_LOB.WRITEAPPEND(l_json_value, 1, '[');
+      DBMS_LOB.COPY(
+         dest_lob     => l_json_value,
+         src_lob      => p_json,
+         amount       => p_end_pos - p_start_pos + 1,
+         dest_offset  => 2,
+         src_offset   => p_start_pos
+      );
+      DBMS_LOB.WRITEAPPEND(l_json_value, 1, ']');
+
       SELECT JSON_VALUE(
-                '[' || p_json_string || ']',
-                '$[0]' RETURNING VARCHAR2(4000) ERROR ON ERROR
+                l_json_value,
+                '$[0]' RETURNING VARCHAR2(2000) ERROR ON ERROR
              )
         INTO l_value
         FROM DUAL;
 
+      DBMS_LOB.FREETEMPORARY(l_json_value);
       RETURN l_value;
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         IF DBMS_LOB.ISTEMPORARY(l_json_value) = 1 THEN
+            DBMS_LOB.FREETEMPORARY(l_json_value);
+         END IF;
+
+         response_Parse_Error(
+            'JSON string parameter cannot be represented in 2000 characters'
+         );
+         RETURN NULL;
    END decode_Json_String;
 
 
@@ -550,12 +581,9 @@ IS
       l_value_start   PLS_INTEGER;
       l_value_end     PLS_INTEGER;
       l_value_len     PLS_INTEGER;
-      l_key_raw       VARCHAR2(4000);
-      l_key           VARCHAR2(4000);
-      l_value_raw     VARCHAR2(32767);
-      l_value         VARCHAR2(32767);
+      l_key           VARCHAR2(2000);
+      l_value         VARCHAR2(2000);
       l_char          VARCHAR2(1);
-      l_truncated     BOOLEAN := FALSE;
    BEGIN
       IF p_json IS NULL THEN
          RETURN;
@@ -594,17 +622,12 @@ IS
          l_key_start := l_pos;
          l_key_end := json_String_End(p_json, l_key_start, l_len);
 
-         IF l_key_end - l_key_start + 1 > 3998 THEN
-            response_Parse_Error('encoded JSON parameter name is too long');
-         END IF;
-
-         l_key_raw :=
-            DBMS_LOB.SUBSTR(
-               p_json,
-               l_key_end - l_key_start + 1,
-               l_key_start
+         l_key :=
+            decode_Json_String(
+               p_json      => p_json,
+               p_start_pos => l_key_start,
+               p_end_pos   => l_key_end
             );
-         l_key := decode_Json_String(l_key_raw);
 
          IF l_key IS NULL OR LENGTH(l_key) > 100 THEN
             response_Parse_Error('JSON parameter name must contain 1..100 characters');
@@ -629,34 +652,42 @@ IS
          l_value_len := l_value_end - l_value_start + 1;
          l_char := json_Char(p_json, l_value_start);
 
-         IF l_char = '"' AND l_value_len <= 3998 THEN
-            l_value_raw :=
-               DBMS_LOB.SUBSTR(p_json, l_value_len, l_value_start);
-            l_value := decode_Json_String(l_value_raw);
-         ELSIF l_char = '"' THEN
-            l_value := DBMS_LOB.SUBSTR(p_json, 2000, l_value_start);
-            l_truncated := TRUE;
-         ELSIF l_char IN ('{', '[') THEN
-            l_value := DBMS_LOB.SUBSTR(p_json, LEAST(l_value_len, 2000), l_value_start);
-            l_truncated := l_truncated OR l_value_len > 2000;
-         ELSE
+         IF l_char = '"' THEN
             l_value :=
-               TRIM(
-                  DBMS_LOB.SUBSTR(
-                     p_json,
-                     LEAST(l_value_len, 32767),
-                     l_value_start
-                  )
+               decode_Json_String(
+                  p_json      => p_json,
+                  p_start_pos => l_value_start,
+                  p_end_pos   => l_value_end
                );
+         ELSIF l_char IN ('{', '[') THEN
+            IF l_value_len > 2000 THEN
+               response_Parse_Error(
+                  'JSON parameter object or array exceeds 2000 characters'
+               );
+            END IF;
+
+            l_value := DBMS_LOB.SUBSTR(p_json, l_value_len, l_value_start);
+         ELSE
+            WHILE l_value_end >= l_value_start
+              AND json_Char(p_json, l_value_end) IN
+                     (' ', CHR(9), CHR(10), CHR(13))
+            LOOP
+               l_value_end := l_value_end - 1;
+            END LOOP;
+
+            l_value_len := l_value_end - l_value_start + 1;
+
+            IF l_value_len > 2000 THEN
+               response_Parse_Error(
+                  'JSON scalar parameter exceeds 2000 characters'
+               );
+            END IF;
+
+            l_value := DBMS_LOB.SUBSTR(p_json, l_value_len, l_value_start);
 
             IF LOWER(l_value) = 'null' THEN
                l_value := NULL;
             END IF;
-         END IF;
-
-         IF LENGTH(l_value) > 2000 THEN
-            l_value := SUBSTR(l_value, 1, 2000);
-            l_truncated := TRUE;
          END IF;
 
          p_parameters(l_key) := l_value;
@@ -680,15 +711,13 @@ IS
          json_Skip_Whitespace(p_json, l_pos, l_len);
       END LOOP;
 
-      IF l_truncated THEN
-         p_parameters('xml_parameters_truncated') := '1';
-      END IF;
    END parse_Json_Parameters;
 
 
    ---------------------------------------------------------------------------
    FUNCTION result_From_Xml (
-      p_xml IN CLOB
+      p_xml              IN CLOB,
+      p_expected_action  IN VARCHAR2
    )
       RETURN exec_Result_t
    IS
@@ -763,7 +792,7 @@ IS
       l_action := TRIM(l_action);
 
       IF l_version IS NOT NULL AND l_version <> '1.0' THEN
-         response_Parse_Error('unsupported version ' || l_version);
+         response_Parse_Error('unsupported XXLResponse version');
       END IF;
 
       l_boolean_text := LOWER(TRIM(l_is_success_text));
@@ -774,6 +803,18 @@ IS
          l_result.is_success := FALSE;
       ELSE
          response_Parse_Error('required boolean is_success is invalid');
+      END IF;
+
+      IF l_result.is_success
+         AND p_expected_action IS NOT NULL
+      THEN
+         IF l_action IS NULL THEN
+            response_Parse_Error('action is required for successful response');
+         ELSIF l_action <> TRIM(p_expected_action) THEN
+            response_Parse_Error(
+               'successful response action does not match request'
+            );
+         END IF;
       END IF;
 
       l_result_code := TRIM(l_result_code);
