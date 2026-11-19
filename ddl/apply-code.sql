@@ -90,6 +90,10 @@ PROMPT ------------------------------------------------------------
 PROMPT Business API packages
 PROMPT ------------------------------------------------------------
 
+@ddl/mi_0202/packages/MI_0202_Api.sql
+SHOW ERRORS PACKAGE MI_0202_Api
+SHOW ERRORS PACKAGE BODY MI_0202_Api
+
 @ddl/mi_0600/packages/MI_0600_Api.sql
 SHOW ERRORS PACKAGE MI_0600_Api
 SHOW ERRORS PACKAGE BODY MI_0600_Api
