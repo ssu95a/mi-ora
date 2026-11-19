@@ -3,7 +3,7 @@ IS
 
    /* MI-edo. Пакет бизнес-логики для 404 файлов */
 
-   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.4} {17.11.2026} Sulimoff$';
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.5} {19.11.2026} Sulimoff$';
 
 
    RET_FAIL     CONSTANT NUMBER := -1;
@@ -249,51 +249,6 @@ IS
    END failure_Result;
 
 
-   /* */
-   FUNCTION result_Number (
-      p_result  IN MI_ResultCtx.exec_Result_t,
-      p_name    IN VARCHAR2
-   )
-      RETURN NUMBER
-   IS
-   BEGIN
-      RETURN TO_NUMBER(p_result.parameters(p_name));
-   EXCEPTION
-      WHEN NO_DATA_FOUND OR VALUE_ERROR THEN
-         RETURN NULL;
-   END result_Number;
-
-
-   /* */
-   PROCEDURE export_Result (
-      p_result    IN  MI_ResultCtx.exec_Result_t,
-      p_ret_code  OUT NUMBER,
-      p_ret_info  OUT VARCHAR2
-   )
-   IS
-   BEGIN
-   
-      p_ret_code := result_Number(p_result, 'ret_code');
-
-      IF p_ret_code IS NULL THEN
-         IF MI_ResultCtx.is_Success(p_result) THEN
-            p_ret_code := RET_OK;
-         ELSE
-            p_ret_code := RET_FAIL;
-         END IF;
-      END IF;
-
-      p_ret_info := SUBSTR( NVL(p_result.result_code, '<NO_RESULT_CODE>') || ': ' || NVL(p_result.result_info, '<NO_RESULT_INFO>') 
-                            || CASE WHEN p_result.cause_code IS NOT NULL OR p_result.cause_info IS NOT NULL THEN '; cause='
-                            || NVL( p_result.cause_code, '<NO_CAUSE_CODE>' )
-                            || ': '
-                            || NVL( p_result.cause_info, '<NO_CAUSE_INFO>')
-                            ELSE NULL
-                        END, 1, 4000 );
-
-   END export_Result;
-
-
    /* Сохраняет имена файлов нового запроса */
    PROCEDURE insert_File_Names (
       p_itm_id      IN MI_0600.ITM_ID%TYPE,
@@ -410,34 +365,6 @@ IS
       l_sqlerrm            VARCHAR2(2000);
 
       l_log                MI_Logger_T := g_log;
-
-      /* */
-      PROCEDURE rollback_Own_Work
-      IS
-         l_name         DCL.T_Name;
-         l_rolled_back  BOOLEAN;
-      BEGIN
-         
-         IF l_savepoint_name IS NOT NULL THEN
-         
-            l_name           := l_savepoint_name;
-            l_savepoint_name := NULL;
-
-            l_rolled_back    := DCL.RollBack(l_name);
-
-            IF NOT l_rolled_back THEN
-            
-               l_log.warn (
-                  p_message_text => 'DCL rollback was not performed',
-                  p_action_code  => 'rollback_skipped'
-               );
-               
-            END IF;
-            
-         END IF;
-         
-      END rollback_Own_Work;
-
 
       /* */
       FUNCTION find_Responder_Duplicate
@@ -636,7 +563,10 @@ IS
 
       IF MI_ResultCtx.is_Failed(l_request_result) THEN
       
-         rollback_Own_Work();
+         MI_Transaction.rollback_And_Warn(
+            p_name => l_savepoint_name,
+            p_log  => l_log
+         );
 
          l_result :=
             MI_ResultCtx.wrap_Exception(
@@ -714,7 +644,10 @@ IS
 
    EXCEPTION
       WHEN e_Duplicate_Archive THEN
-         rollback_Own_Work;
+         MI_Transaction.rollback_And_Warn(
+            p_name => l_savepoint_name,
+            p_log  => l_log
+         );
 
          l_log.error(
             p_message_text => 'Duplicate final archive rejected',
@@ -728,7 +661,10 @@ IS
          l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
 
-         rollback_Own_Work;
+         MI_Transaction.rollback_And_Warn(
+            p_name => l_savepoint_name,
+            p_log  => l_log
+         );
 
          /* UK_MI_0600__CZIP_NAME closes a concurrent capture race. */
          IF archive_Exists(l_czip_name) THEN
@@ -762,7 +698,10 @@ IS
          l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
 
-         rollback_Own_Work();
+         MI_Transaction.rollback_And_Warn(
+            p_name => l_savepoint_name,
+            p_log  => l_log
+         );
 
          l_log.error(
             p_message_text => 'create_Request failed',
@@ -824,13 +763,24 @@ IS
             p_icreate_type      => p_icreate_type
          );
 
-      p_req_id := result_Number(l_result, 'req_id');
-      p_itm_id := result_Number(l_result, 'itm_id');
+      p_req_id :=
+         MI_ResultCtx.result_Number(
+            p_result => l_result,
+            p_name   => 'req_id'
+         );
 
-      export_Result(
-         p_result   => l_result,
-         p_ret_code => p_ret_code,
-         p_ret_info => p_ret_info
+      p_itm_id :=
+         MI_ResultCtx.result_Number(
+            p_result => l_result,
+            p_name   => 'itm_id'
+         );
+
+      MI_ResultCtx.export_Jdbc_Result(
+         p_result        => l_result,
+         p_success_code  => RET_OK,
+         p_failure_code  => RET_FAIL,
+         p_ret_code      => p_ret_code,
+         p_ret_info      => p_ret_info
       );
 
    EXCEPTION
@@ -988,10 +938,12 @@ IS
             p_payload_type      => p_payload_type
          );
 
-      export_Result(
-         p_result   => l_result,
-         p_ret_code => p_ret_code,
-         p_ret_info => p_ret_info
+      MI_ResultCtx.export_Jdbc_Result(
+         p_result        => l_result,
+         p_success_code  => RET_OK,
+         p_failure_code  => RET_FAIL,
+         p_ret_code      => p_ret_code,
+         p_ret_info      => p_ret_info
       );
 
    EXCEPTION

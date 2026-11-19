@@ -44,6 +44,15 @@ SHOW ERRORS TYPE BODY MI_Logger_T
 
 
 PROMPT ------------------------------------------------------------
+PROMPT Core transaction utilities
+PROMPT ------------------------------------------------------------
+
+@ddl/core/packages/MI_Transaction.sql
+SHOW ERRORS PACKAGE MI_Transaction
+SHOW ERRORS PACKAGE BODY MI_Transaction
+
+
+PROMPT ------------------------------------------------------------
 PROMPT Core business API packages
 PROMPT ------------------------------------------------------------
 
@@ -62,6 +71,10 @@ SHOW ERRORS PACKAGE BODY MI_Person_Api
 @ddl/core/packages/MI_Item_Result_Api.sql
 SHOW ERRORS PACKAGE MI_Item_Result_Api
 SHOW ERRORS PACKAGE BODY MI_Item_Result_Api
+
+@ddl/core/packages/MI_Request_Sup.sql
+SHOW ERRORS PACKAGE MI_Request_Sup
+SHOW ERRORS PACKAGE BODY MI_Request_Sup
 
 
 PROMPT ------------------------------------------------------------

@@ -4,7 +4,7 @@ IS
    /* MI-edo. DOCUMENT_RECEIVED вида сведений 607 */
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.2.1} {16.11.2026} Sulimoff$';
+      '$Id: {1.2.2} {19.11.2026} Sulimoff$';
 
 
    RET_FAIL               CONSTANT PLS_INTEGER := -1;
@@ -485,43 +485,6 @@ IS
       l_log                 MI_Logger_T := g_log;
 
 
-      FUNCTION rollback_Savepoint (
-         p_name IN OUT DCL.T_Name
-      )
-         RETURN BOOLEAN
-      IS
-         l_name    DCL.T_Name;
-         l_result  BOOLEAN;
-      BEGIN
-         IF p_name IS NULL THEN
-            RETURN TRUE;
-         END IF;
-
-         l_name := p_name;
-         p_name := NULL;
-
-         l_result := DCL.RollBack(l_name);
-
-         RETURN l_result IS NOT NULL AND l_result;
-
-      EXCEPTION
-         WHEN OTHERS THEN
-            l_log.error(
-               p_message_text => 'DCL rollback failed',
-               p_action_code  => 'rollback',
-               p_details_text =>
-                  TO_CLOB(
-                        'savepoint='
-                     || l_name
-                     || '; error='
-                     || SQLERRM
-                  )
-            );
-
-            RETURN FALSE;
-      END rollback_Savepoint;
-
-
       PROCEDURE return_Existing
       IS
       BEGIN
@@ -594,7 +557,11 @@ IS
       )
       IS
       BEGIN
-         IF NOT rollback_Savepoint(l_business_savepoint) THEN
+         IF NOT MI_Transaction.rollback_Savepoint(
+                   p_name => l_business_savepoint,
+                   p_log  => l_log
+                )
+         THEN
             raise_Technical_Error(
                p_code => 'MI_0607_BUSINESS_ROLLBACK_FAILED',
                p_info =>
@@ -803,7 +770,11 @@ IS
             Roll back our attempt and recheck the durable 607 journal before
             classifying the result as a technical request-header failure.
          */
-         l_rollback_ok := rollback_Savepoint(l_own_savepoint);
+         l_rollback_ok :=
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_own_savepoint,
+               p_log  => l_log
+            );
          l_business_savepoint := NULL;
 
          IF NOT l_rollback_ok THEN
@@ -1088,7 +1059,11 @@ IS
       WHEN DUP_VAL_ON_INDEX THEN
       
          l_sqlerrm     := SQLERRM;
-         l_rollback_ok := rollback_Savepoint(l_own_savepoint);
+         l_rollback_ok :=
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_own_savepoint,
+               p_log  => l_log
+            );
          l_business_savepoint := NULL;
 
          IF NOT l_rollback_ok THEN
@@ -1144,7 +1119,11 @@ IS
       ------------------------------------------------------------------------
       WHEN OTHERS THEN
          l_sqlerrm     := SQLERRM;
-         l_rollback_ok := rollback_Savepoint(l_own_savepoint);
+         l_rollback_ok :=
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_own_savepoint,
+               p_log  => l_log
+            );
          l_business_savepoint := NULL;
 
          l_log.error(

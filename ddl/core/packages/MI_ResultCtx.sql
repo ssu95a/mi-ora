@@ -4,7 +4,7 @@ IS
 
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.2.0} {18.11.2026} Sulimoff$';
+      '$Id: {1.3.0} {19.11.2026} Sulimoff$';
 
 
    cResult_Success CONSTANT VARCHAR2(100) := 'SUCCESS';
@@ -90,6 +90,49 @@ IS
       p_result IN exec_Result_t
    )
       RETURN BOOLEAN;
+
+
+   /*
+      Единый доступ к именованным parameters результата.
+
+      NULL не записывается, чтобы отсутствие параметра сохраняло прежнюю
+      семантику. result_Number возвращает NULL как для отсутствующего, так и
+      для нечислового значения.
+   */
+   PROCEDURE put_Parameter (
+      p_result  IN OUT NOCOPY exec_Result_t,
+      p_name    IN VARCHAR2,
+      p_value   IN VARCHAR2
+   );
+
+
+   PROCEDURE put_Number (
+      p_result  IN OUT NOCOPY exec_Result_t,
+      p_name    IN VARCHAR2,
+      p_value   IN NUMBER
+   );
+
+
+   FUNCTION result_Number (
+      p_result  IN exec_Result_t,
+      p_name    IN VARCHAR2
+   )
+      RETURN NUMBER;
+
+
+   /*
+      Экспорт structured result в старый JDBC OUT contract.
+
+      Коды успеха/ошибки задаёт вызывающий API: MI_ResultCtx не владеет
+      бизнес-значениями RET_*.
+   */
+   PROCEDURE export_Jdbc_Result (
+      p_result        IN  exec_Result_t,
+      p_success_code  IN  NUMBER,
+      p_failure_code  IN  NUMBER,
+      p_ret_code      OUT NUMBER,
+      p_ret_info      OUT VARCHAR2
+   );
 
 
    /*
@@ -384,6 +427,94 @@ IS
    BEGIN
       RETURN NOT is_Success(p_result);
    END is_Failed;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE put_Parameter (
+      p_result  IN OUT NOCOPY exec_Result_t,
+      p_name    IN VARCHAR2,
+      p_value   IN VARCHAR2
+   )
+   IS
+   BEGIN
+      IF p_value IS NOT NULL THEN
+         p_result.parameters(p_name) := SUBSTR(p_value, 1, 2000);
+      END IF;
+   END put_Parameter;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE put_Number (
+      p_result  IN OUT NOCOPY exec_Result_t,
+      p_name    IN VARCHAR2,
+      p_value   IN NUMBER
+   )
+   IS
+   BEGIN
+      IF p_value IS NOT NULL THEN
+         put_Parameter(
+            p_result => p_result,
+            p_name   => p_name,
+            p_value  => TO_CHAR(p_value, 'TM9')
+         );
+      END IF;
+   END put_Number;
+
+
+   ---------------------------------------------------------------------------
+   FUNCTION result_Number (
+      p_result  IN exec_Result_t,
+      p_name    IN VARCHAR2
+   )
+      RETURN NUMBER
+   IS
+   BEGIN
+      RETURN TO_NUMBER(p_result.parameters(p_name));
+   EXCEPTION
+      WHEN NO_DATA_FOUND OR VALUE_ERROR OR INVALID_NUMBER THEN
+         RETURN NULL;
+   END result_Number;
+
+
+   ---------------------------------------------------------------------------
+   PROCEDURE export_Jdbc_Result (
+      p_result        IN  exec_Result_t,
+      p_success_code  IN  NUMBER,
+      p_failure_code  IN  NUMBER,
+      p_ret_code      OUT NUMBER,
+      p_ret_info      OUT VARCHAR2
+   )
+   IS
+   BEGIN
+      p_ret_code := result_Number(p_result, 'ret_code');
+
+      IF p_ret_code IS NULL THEN
+         IF is_Success(p_result) THEN
+            p_ret_code := p_success_code;
+         ELSE
+            p_ret_code := p_failure_code;
+         END IF;
+      END IF;
+
+      p_ret_info :=
+         SUBSTR(
+               NVL(p_result.result_code, '<NO_RESULT_CODE>')
+            || ': '
+            || NVL(p_result.result_info, '<NO_RESULT_INFO>')
+            || CASE
+                  WHEN p_result.cause_code IS NOT NULL
+                     OR p_result.cause_info IS NOT NULL
+                  THEN
+                        '; cause='
+                     || NVL(p_result.cause_code, '<NO_CAUSE_CODE>')
+                     || ': '
+                     || NVL(p_result.cause_info, '<NO_CAUSE_INFO>')
+                  ELSE NULL
+               END,
+            1,
+            4000
+         );
+   END export_Jdbc_Result;
 
 
    ---------------------------------------------------------------------------

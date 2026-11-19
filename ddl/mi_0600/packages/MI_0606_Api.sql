@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_0606_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.2.0} {16.11.2026} Sulimoff$';
+      '$Id: {1.2.1} {19.11.2026} Sulimoff$';
 
 
    ---------------------------------------------------------------------------
@@ -349,42 +349,6 @@ IS
 
 
 
-   /*
-      DCL.RollBack may return FALSE instead of raising an exception.
-      A caller may return RET_* only after a confirmed local rollback.
-   */
-   FUNCTION rollback_Savepoint (
-      p_name IN OUT DCL.T_Name
-   )
-      RETURN BOOLEAN
-   IS
-      l_name    DCL.T_Name;
-      l_result  BOOLEAN;
-   BEGIN
-      IF p_name IS NULL THEN
-         RETURN TRUE;
-      END IF;
-
-      l_name := p_name;
-      p_name := NULL;
-
-      l_result := DCL.RollBack(l_name);
-
-      RETURN l_result IS NOT NULL AND l_result;
-
-   EXCEPTION
-      WHEN OTHERS THEN
-         g_log.error(
-            p_message_text => 'DCL rollback failed',
-            p_action_code  => 'rollback',
-            p_details_text => TO_CLOB( 'savepoint=' || l_name || '; error=' || SQLERRM )
-         );
-
-         RETURN FALSE;
-         
-   END rollback_Savepoint;
-
-
    /* */
    PROCEDURE rollback_Or_Raise (
       p_name  IN OUT DCL.T_Name,
@@ -393,7 +357,11 @@ IS
    )
    IS
    BEGIN
-      IF NOT rollback_Savepoint(p_name) THEN
+      IF NOT MI_Transaction.rollback_Savepoint(
+                p_name => p_name,
+                p_log  => g_log
+             )
+      THEN
          raise_Technical_Error(
             p_code => p_code,
             p_info => p_info
@@ -1148,7 +1116,11 @@ IS
 
    EXCEPTION
       WHEN OTHERS THEN
-         l_rollback_ok := rollback_Savepoint(l_savepoint);
+         l_rollback_ok :=
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_savepoint,
+               p_log  => l_log
+            );
 
          l_log.error(
             p_message_text => 'apply_Document_Submitted failed',
@@ -1344,7 +1316,11 @@ IS
 
    EXCEPTION
       WHEN OTHERS THEN
-         l_rollback_ok := rollback_Savepoint(l_savepoint);
+         l_rollback_ok :=
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_savepoint,
+               p_log  => l_log
+            );
 
          l_log.error(
             p_message_text => 'apply_Document_Status failed',
@@ -1527,7 +1503,11 @@ IS
 
    EXCEPTION
       WHEN OTHERS THEN
-         l_rollback_ok := rollback_Savepoint(l_savepoint);
+         l_rollback_ok :=
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_savepoint,
+               p_log  => l_log
+            );
 
          l_log.error(
             p_message_text => 'apply_Fault failed',
@@ -2031,7 +2011,10 @@ IS
          l_sqlerrm := SQLERRM;
 
          l_rollback_ok :=
-            rollback_Savepoint(l_savepoint_name);
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_savepoint_name,
+               p_log  => g_log
+            );
 
 
          g_log.error(
@@ -2360,7 +2343,10 @@ IS
 
 
          l_rollback_ok :=
-            rollback_Savepoint(l_savepoint_name);
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_savepoint_name,
+               p_log  => l_log
+            );
 
 
          l_log.error(

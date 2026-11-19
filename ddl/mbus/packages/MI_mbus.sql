@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_mbus
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.2.0} {18.11.2026} Sulimoff$';
+      '$Id: {1.2.1} {19.11.2026} Sulimoff$';
 
 
    RESULT_ALREADY_IN_PROGRESS CONSTANT VARCHAR2(100) := 'ALREADY_IN_PROGRESS';
@@ -149,38 +149,6 @@ IS
 
 
    ---------------------------------------------------------------------------
-   PROCEDURE put_Parameter (
-      p_result  IN OUT NOCOPY MI_ResultCtx.exec_Result_t,
-      p_name    IN VARCHAR2,
-      p_value   IN VARCHAR2
-   )
-   IS
-   BEGIN
-      IF p_value IS NOT NULL THEN
-         p_result.parameters(p_name) := SUBSTR(p_value, 1, 2000);
-      END IF;
-   END put_Parameter;
-
-
-   ---------------------------------------------------------------------------
-   PROCEDURE put_Number (
-      p_result  IN OUT NOCOPY MI_ResultCtx.exec_Result_t,
-      p_name    IN VARCHAR2,
-      p_value   IN NUMBER
-   )
-   IS
-   BEGIN
-      IF p_value IS NOT NULL THEN
-         put_Parameter(
-            p_result => p_result,
-            p_name   => p_name,
-            p_value  => TO_CHAR(p_value, 'TM9')
-         );
-      END IF;
-   END put_Number;
-
-
-   ---------------------------------------------------------------------------
    PROCEDURE put_Common_Context (
       p_result        IN OUT NOCOPY MI_ResultCtx.exec_Result_t,
       p_call_uuid     IN VARCHAR2,
@@ -194,50 +162,16 @@ IS
    )
    IS
    BEGIN
-      put_Parameter(p_result, 'call_uuid', p_call_uuid);
-      put_Parameter(p_result, 'scope', p_scope);
-      put_Parameter(p_result, 'action', p_action);
+      MI_ResultCtx.put_Parameter(p_result, 'call_uuid', p_call_uuid);
+      MI_ResultCtx.put_Parameter(p_result, 'scope', p_scope);
+      MI_ResultCtx.put_Parameter(p_result, 'action', p_action);
 
-      put_Number(p_result, 'inf_id', p_inf_id);
-      put_Number(p_result, 'req_id', p_req_id);
-      put_Number(p_result, 'itm_id', p_itm_id);
-      put_Number(p_result, 'rsp_id', p_rsp_id);
-      put_Number(p_result, 'status_cd', p_status_cd);
+      MI_ResultCtx.put_Number(p_result, 'inf_id', p_inf_id);
+      MI_ResultCtx.put_Number(p_result, 'req_id', p_req_id);
+      MI_ResultCtx.put_Number(p_result, 'itm_id', p_itm_id);
+      MI_ResultCtx.put_Number(p_result, 'rsp_id', p_rsp_id);
+      MI_ResultCtx.put_Number(p_result, 'status_cd', p_status_cd);
    END put_Common_Context;
-
-
-   ---------------------------------------------------------------------------
-   FUNCTION success_Result (
-      p_code  IN VARCHAR2,
-      p_info  IN VARCHAR2
-   )
-      RETURN MI_ResultCtx.exec_Result_t
-   IS
-   BEGIN
-      RETURN
-         MI_ResultCtx.success(
-            p_code => p_code,
-            p_info => p_info
-         );
-   END success_Result;
-
-
-   ---------------------------------------------------------------------------
-   FUNCTION failure_Result (
-      p_code     IN VARCHAR2,
-      p_info     IN VARCHAR2,
-      p_details  IN CLOB DEFAULT NULL
-   )
-      RETURN MI_ResultCtx.exec_Result_t
-   IS
-   BEGIN
-      RETURN
-         MI_ResultCtx.failure(
-            p_code    => p_code,
-            p_info    => p_info,
-            p_details => p_details
-         );
-   END failure_Result;
 
 
    ---------------------------------------------------------------------------
@@ -304,11 +238,11 @@ IS
       IS
       BEGIN
          p_result :=
-            failure_Result(
+            MI_ResultCtx.failure(
                p_code => cErr_Transport_Config,
                p_info => p_info
             );
-         put_Parameter(p_result, 'property_name', p_property);
+         MI_ResultCtx.put_Parameter(p_result, 'property_name', p_property);
       END invalid_Property;
    BEGIN
       p_is_valid := FALSE;
@@ -416,7 +350,7 @@ IS
    BEGIN
       IF p_request_xml IS NULL THEN
          p_result :=
-            failure_Result(
+            MI_ResultCtx.failure(
                p_code => 'MI_MBUS.TRANSPORT#EMPTY_REQUEST',
                p_info => 'XXLRequest was not prepared'
             );
@@ -446,12 +380,12 @@ IS
                   p_info    =>
                      'Oracle Multi-Bus call failed; delivery outcome is unknown'
                );
-            put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
-            put_Parameter(p_result, 'retry_safe', '0');
-            put_Parameter(p_result, 'request_queue', p_request_queue);
-            put_Parameter(p_result, 'response_queue', p_response_queue);
-            put_Parameter(p_result, 'gate_alias', p_gate_alias);
-            put_Number(p_result, 'timeout_sec', p_timeout_sec);
+            MI_ResultCtx.put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
+            MI_ResultCtx.put_Parameter(p_result, 'retry_safe', '0');
+            MI_ResultCtx.put_Parameter(p_result, 'request_queue', p_request_queue);
+            MI_ResultCtx.put_Parameter(p_result, 'response_queue', p_response_queue);
+            MI_ResultCtx.put_Parameter(p_result, 'gate_alias', p_gate_alias);
+            MI_ResultCtx.put_Number(p_result, 'timeout_sec', p_timeout_sec);
             RETURN;
       END;
 
@@ -477,8 +411,8 @@ IS
                p_cause_code => 'MBUS_ERROR',
                p_cause_info => SUBSTR(l_error_message, 1, 2000)
             );
-         put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
-         put_Parameter(p_result, 'retry_safe', '0');
+         MI_ResultCtx.put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
+         MI_ResultCtx.put_Parameter(p_result, 'retry_safe', '0');
       ELSIF l_response_size = 0
          OR REGEXP_LIKE(
                DBMS_LOB.SUBSTR(l_response_xml, 4000, 1),
@@ -486,12 +420,12 @@ IS
             )
       THEN
          p_result :=
-            failure_Result(
+            MI_ResultCtx.failure(
                p_code => p_empty_response_code,
                p_info => 'XXLResponse is empty'
             );
-         put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
-         put_Parameter(p_result, 'retry_safe', '0');
+         MI_ResultCtx.put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
+         MI_ResultCtx.put_Parameter(p_result, 'retry_safe', '0');
       ELSE
          BEGIN
             p_result :=
@@ -508,19 +442,19 @@ IS
                      p_code    => p_parse_error_code,
                      p_info    => 'Error parsing XXLResponse'
                   );
-               put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
-               put_Parameter(p_result, 'retry_safe', '0');
+               MI_ResultCtx.put_Parameter(p_result, 'delivery_outcome', 'UNKNOWN');
+               MI_ResultCtx.put_Parameter(p_result, 'retry_safe', '0');
          END;
       END IF;
 
-      put_Number(p_result, 'request_size', DBMS_LOB.getlength(p_request_xml));
-      put_Number(p_result, 'response_size', l_response_size);
-      put_Number(p_result, 'bus_result_code', l_bus_result);
-      put_Parameter(p_result, 'bus_correlation_id', l_correlation);
-      put_Parameter(p_result, 'request_queue', p_request_queue);
-      put_Parameter(p_result, 'response_queue', p_response_queue);
-      put_Parameter(p_result, 'gate_alias', p_gate_alias);
-      put_Number(p_result, 'timeout_sec', p_timeout_sec);
+      MI_ResultCtx.put_Number(p_result, 'request_size', DBMS_LOB.getlength(p_request_xml));
+      MI_ResultCtx.put_Number(p_result, 'response_size', l_response_size);
+      MI_ResultCtx.put_Number(p_result, 'bus_result_code', l_bus_result);
+      MI_ResultCtx.put_Parameter(p_result, 'bus_correlation_id', l_correlation);
+      MI_ResultCtx.put_Parameter(p_result, 'request_queue', p_request_queue);
+      MI_ResultCtx.put_Parameter(p_result, 'response_queue', p_response_queue);
+      MI_ResultCtx.put_Parameter(p_result, 'gate_alias', p_gate_alias);
+      MI_ResultCtx.put_Number(p_result, 'timeout_sec', p_timeout_sec);
    END call_Transport;
 
 
@@ -550,7 +484,7 @@ IS
    BEGIN
       IF p_req_id IS NULL THEN
          p_result :=
-            failure_Result(
+            MI_ResultCtx.failure(
                p_code => cErr_Request_Not_Found,
                p_info => 'p_req_id is required'
             );
@@ -577,7 +511,7 @@ IS
       EXCEPTION
          WHEN NO_DATA_FOUND THEN
             p_result :=
-               failure_Result(
+               MI_ResultCtx.failure(
                   p_code => cErr_Request_Not_Found,
                   p_info => 'Request not found in MI_REQ'
                );
@@ -593,7 +527,7 @@ IS
 
       IF l_status_cd = MI_Request_Api.STATUS_BUSY THEN
          p_result :=
-            success_Result(
+            MI_ResultCtx.success(
                p_code => RESULT_ALREADY_IN_PROGRESS,
                p_info => 'Request is already in progress'
             );
@@ -606,7 +540,7 @@ IS
          RETURN;
       ELSIF l_status_cd = MI_Request_Api.STATUS_SENT THEN
          p_result :=
-            success_Result(
+            MI_ResultCtx.success(
                p_code => RESULT_ALREADY_SENT,
                p_info => 'Request is already sent, waiting item responses'
             );
@@ -619,7 +553,7 @@ IS
          RETURN;
       ELSIF l_status_cd = MI_Request_Api.STATUS_DONE THEN
          p_result :=
-            success_Result(
+            MI_ResultCtx.success(
                p_code => RESULT_ALREADY_COMPLETED,
                p_info => 'Request is already completed'
             );
@@ -636,7 +570,7 @@ IS
       )
       THEN
          p_result :=
-            failure_Result(
+            MI_ResultCtx.failure(
                p_code => cErr_Request_Bad_Status,
                p_info => 'Invalid request status for send'
             );
@@ -655,7 +589,7 @@ IS
          OR l_external_uuid IS NULL
       THEN
          p_result :=
-            failure_Result(
+            MI_ResultCtx.failure(
                p_code => cErr_Request_Bad_Identity,
                p_info => 'Request identity is incomplete'
             );
@@ -791,7 +725,7 @@ IS
    BEGIN
       IF p_rsp_id IS NULL THEN
          p_result :=
-            failure_Result(
+            MI_ResultCtx.failure(
                p_code => cErr_Response_Not_Found,
                p_info => 'p_rsp_id is required'
             );
@@ -826,7 +760,7 @@ IS
       EXCEPTION
          WHEN NO_DATA_FOUND THEN
             p_result :=
-               failure_Result(
+               MI_ResultCtx.failure(
                   p_code => cErr_Response_Not_Found,
                   p_info => 'Response not found in MI_RSP'
                );
@@ -844,7 +778,7 @@ IS
 
       IF l_status_cd = MI_Response_Api.STATUS_SENT THEN
          p_result :=
-            success_Result(
+            MI_ResultCtx.success(
                p_code => RESULT_ALREADY_SENT,
                p_info => 'Response is already sent'
             );
@@ -861,7 +795,7 @@ IS
 
       IF l_status_cd <> MI_Response_Api.STATUS_READY THEN
          p_result :=
-            failure_Result(
+            MI_ResultCtx.failure(
                p_code => cErr_Response_Bad_Status,
                p_info => 'Invalid response status for send'
             );
@@ -885,7 +819,7 @@ IS
          OR l_original_request_uuid IS NULL
       THEN
          p_result :=
-            failure_Result(
+            MI_ResultCtx.failure(
                p_code => cErr_Response_Bad_Identity,
                p_info => 'Response identity is incomplete'
             );
@@ -1048,7 +982,7 @@ IS
 
       IF p_inf_id IS NOT NULL AND p_inf_id <= 0 THEN
          p_result :=
-            failure_Result(
+            MI_ResultCtx.failure(
                p_code => cErr_Command_Invalid_Inf,
                p_info => 'p_inf_id must be positive or NULL'
             );
@@ -1064,7 +998,7 @@ IS
 
       IF l_action IS NULL THEN
          p_result :=
-            failure_Result(
+            MI_ResultCtx.failure(
                p_code => cErr_Command_Action_Required,
                p_info => 'p_action is required'
             );
@@ -1086,7 +1020,7 @@ IS
          OR REGEXP_LIKE(l_action, '[[:space:][:cntrl:]]')
       THEN
          p_result :=
-            failure_Result(
+            MI_ResultCtx.failure(
                p_code => cErr_Command_Invalid_Action,
                p_info => 'p_action must be a printable routing key up to 100 characters'
             );
@@ -1112,7 +1046,7 @@ IS
          OR NOT REGEXP_LIKE(l_parameters, '[}][[:space:]]*$', 'n')
       THEN
          p_result :=
-            failure_Result(
+            MI_ResultCtx.failure(
                p_code => cErr_Command_Bad_Parameters,
                p_info => 'p_parameters must be a strict JSON object'
             );
@@ -1123,7 +1057,7 @@ IS
             p_inf_id => p_inf_id,
             p_req_id => p_req_id
          );
-         put_Number(
+         MI_ResultCtx.put_Number(
             p_result,
             'parameters_size',
             DBMS_LOB.getlength(l_parameters)
@@ -1145,7 +1079,7 @@ IS
          EXCEPTION
             WHEN NO_DATA_FOUND THEN
                p_result :=
-                  failure_Result(
+                  MI_ResultCtx.failure(
                      p_code => cErr_Command_Request_Not_Found,
                      p_info => 'Request not found in MI_REQ'
                   );
@@ -1161,7 +1095,7 @@ IS
 
          IF p_inf_id IS NOT NULL AND p_inf_id <> l_resolved_inf_id THEN
             p_result :=
-               failure_Result(
+               MI_ResultCtx.failure(
                   p_code => cErr_Command_Inf_Mismatch,
                   p_info => 'p_inf_id does not match MI_REQ.INF_ID'
                );
@@ -1172,7 +1106,7 @@ IS
                p_inf_id => l_resolved_inf_id,
                p_req_id => p_req_id
             );
-            put_Number(p_result, 'provided_inf_id', p_inf_id);
+            MI_ResultCtx.put_Number(p_result, 'provided_inf_id', p_inf_id);
             RETURN;
          END IF;
 
@@ -1188,7 +1122,7 @@ IS
          EXCEPTION
             WHEN NO_DATA_FOUND THEN
                p_result :=
-                  failure_Result(
+                  MI_ResultCtx.failure(
                      p_code => cErr_Command_Inf_Not_Found,
                      p_info => 'Information type not found in MI_INF'
                   );
@@ -1292,7 +1226,7 @@ IS
          p_inf_id => l_resolved_inf_id,
          p_req_id => p_req_id
       );
-      put_Number(
+      MI_ResultCtx.put_Number(
          p_result,
          'parameters_size',
          DBMS_LOB.getlength(l_parameters)

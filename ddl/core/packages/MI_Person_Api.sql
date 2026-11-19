@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_Person_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.0.1} {09.11.2026} Sulimoff$';
+      '$Id: {1.0.2} {19.11.2026} Sulimoff$';
 
 
    FUNCTION get_Version
@@ -944,7 +944,11 @@ IS
 
          IF l_dml_started THEN
             l_dml_started := FALSE;
-            l_rolled_back := DCL.RollBack(l_savepoint_name);
+            l_rolled_back :=
+               MI_Transaction.rollback_Savepoint(
+                  p_name => l_savepoint_name,
+                  p_log  => l_log
+               );
 
             IF NOT l_rolled_back THEN
                l_log.warn(

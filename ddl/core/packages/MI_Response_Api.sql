@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_Response_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.1.0} {18.11.2026} Sulimoff$';
+      '$Id: {1.1.1} {19.11.2026} Sulimoff$';
 
 
    /*
@@ -277,52 +277,6 @@ IS
 
       RETURN l_result;
    END failure_Result;
-
-
-   ---------------------------------------------------------------------------
-   PROCEDURE export_Jdbc_Result (
-      p_result    IN  MI_ResultCtx.exec_Result_t,
-      p_ret_code  OUT NUMBER,
-      p_ret_info  OUT VARCHAR2
-   )
-   IS
-   BEGIN
-      p_ret_code := NULL;
-
-      BEGIN
-         p_ret_code := TO_NUMBER(p_result.parameters('ret_code'));
-      EXCEPTION
-         WHEN NO_DATA_FOUND OR VALUE_ERROR THEN
-            p_ret_code := NULL;
-      END;
-
-      IF p_ret_code IS NULL THEN
-         IF MI_ResultCtx.is_Success(p_result) THEN
-            p_ret_code := RET_OK;
-         ELSE
-            p_ret_code := RET_FAIL;
-         END IF;
-      END IF;
-
-      p_ret_info :=
-         SUBSTR(
-               NVL(p_result.result_code, '<NO_RESULT_CODE>')
-            || ': '
-            || NVL(p_result.result_info, '<NO_RESULT_INFO>')
-            || CASE
-                  WHEN p_result.cause_code IS NOT NULL
-                     OR p_result.cause_info IS NOT NULL
-                  THEN
-                        '; cause='
-                     || NVL(p_result.cause_code, '<NO_CAUSE_CODE>')
-                     || ': '
-                     || NVL(p_result.cause_info, '<NO_CAUSE_INFO>')
-                  ELSE NULL
-               END,
-            1,
-            4000
-         );
-   END export_Jdbc_Result;
 
 
    ---------------------------------------------------------------------------
@@ -709,10 +663,12 @@ IS
    BEGIN
       l_result := to_Sent(p_rsp_id => p_rsp_id);
 
-      export_Jdbc_Result(
-         p_result   => l_result,
-         p_ret_code => p_ret_code,
-         p_ret_info => p_ret_info
+      MI_ResultCtx.export_Jdbc_Result(
+         p_result        => l_result,
+         p_success_code  => RET_OK,
+         p_failure_code  => RET_FAIL,
+         p_ret_code      => p_ret_code,
+         p_ret_info      => p_ret_info
       );
    END to_Sent;
 

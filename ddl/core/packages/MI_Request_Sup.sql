@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_Request_Sup
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.0.0} {19.11.2026} Sulimoff$';
+      '$Id: {1.0.1} {19.11.2026} Sulimoff$';
 
 
    RET_FAIL CONSTANT PLS_INTEGER := -1;
@@ -74,58 +74,6 @@ IS
    BEGIN
       RETURN VERSION;
    END get_Version;
-
-
-   ---------------------------------------------------------------------------
-   FUNCTION result_Number (
-      p_result  IN MI_ResultCtx.exec_Result_t,
-      p_name    IN VARCHAR2
-   )
-      RETURN NUMBER
-   IS
-   BEGIN
-      RETURN TO_NUMBER(p_result.parameters(p_name));
-   EXCEPTION
-      WHEN NO_DATA_FOUND OR VALUE_ERROR THEN
-         RETURN NULL;
-   END result_Number;
-
-
-   ---------------------------------------------------------------------------
-   FUNCTION rollback_Savepoint (
-      p_name IN OUT DCL.T_Name
-   )
-      RETURN BOOLEAN
-   IS
-      l_name    DCL.T_Name;
-      l_result  BOOLEAN;
-   BEGIN
-      IF p_name IS NULL THEN
-         RETURN TRUE;
-      END IF;
-
-      l_name := p_name;
-      p_name := NULL;
-
-      l_result := DCL.RollBack(l_name);
-
-      RETURN l_result IS NOT NULL AND l_result;
-
-   EXCEPTION
-      WHEN OTHERS THEN
-         g_log.error(
-            p_message_text => 'DCL rollback failed',
-            p_action_code  => 'rollback',
-            p_details_text =>
-               TO_CLOB(
-                     'savepoint='
-                  || l_name
-                  || '; error='
-                  || SQLERRM
-               )
-         );
-         RETURN FALSE;
-   END rollback_Savepoint;
 
 
    ---------------------------------------------------------------------------
@@ -394,7 +342,11 @@ IS
          p_operation => 'MI_Request_Api.create_Request'
       );
 
-      p_req_id := result_Number(l_request_result, 'req_id');
+      p_req_id :=
+         MI_ResultCtx.result_Number(
+            p_result => l_request_result,
+            p_name   => 'req_id'
+         );
 
       IF p_req_id IS NULL THEN
          fail_Apply('MI_Request_Api.create_Request returned NULL req_id');
@@ -441,7 +393,11 @@ IS
             p_operation => 'MI_Response_Api.create_Response'
          );
 
-         p_rsp_id := result_Number(l_response_result, 'rsp_id');
+         p_rsp_id :=
+            MI_ResultCtx.result_Number(
+               p_result => l_response_result,
+               p_name   => 'rsp_id'
+            );
 
          IF p_rsp_id IS NULL THEN
             fail_Apply('MI_Response_Api.create_Response returned NULL rsp_id');
@@ -493,7 +449,11 @@ IS
 
    EXCEPTION
       WHEN e_Apply_Failed THEN
-         IF NOT rollback_Savepoint(l_savepoint_name) THEN
+         IF NOT MI_Transaction.rollback_Savepoint(
+                   p_name => l_savepoint_name,
+                   p_log  => l_log
+                )
+         THEN
             l_log.error(
                p_message_text => 'Request registration rollback failed',
                p_action_code  => 'rollback',
@@ -511,7 +471,11 @@ IS
          l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
 
-         IF NOT rollback_Savepoint(l_savepoint_name) THEN
+         IF NOT MI_Transaction.rollback_Savepoint(
+                   p_name => l_savepoint_name,
+                   p_log  => l_log
+                )
+         THEN
             l_log.error(
                p_message_text => 'Request registration rollback failed',
                p_action_code  => 'rollback',
