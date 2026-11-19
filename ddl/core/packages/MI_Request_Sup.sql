@@ -57,6 +57,7 @@ CREATE OR REPLACE PACKAGE BODY MI_Request_Sup
 IS
 
    cLogger CONSTANT VARCHAR2(64) := 'mi.request.sup';
+   cErrorCode CONSTANT PLS_INTEGER := -20003;
 
 
    g_log CONSTANT MI_Logger_T :=
@@ -140,7 +141,7 @@ IS
    BEGIN
       IF TRIM(p_item_table) IS NULL THEN
          RAISE_APPLICATION_ERROR(
-            -20041,
+            cErrorCode,
             'p_item_table must not be NULL or blank'
          );
       END IF;
@@ -154,7 +155,7 @@ IS
 
       IF NOT REGEXP_LIKE(l_table_name, '^MI_[[:digit:]]{4}$', 'c') THEN
          RAISE_APPLICATION_ERROR(
-            -20042,
+            cErrorCode,
             'p_item_table must have MI_NNNN form'
          );
       END IF;
@@ -166,7 +167,7 @@ IS
 
       IF l_table_count <> 1 THEN
          RAISE_APPLICATION_ERROR(
-            -20043,
+            cErrorCode,
             'Item table does not exist in current schema: ' || l_table_name
          );
       END IF;
@@ -192,7 +193,7 @@ IS
 
       IF l_column_count <> 5 OR NVL(l_payload_count, 0) <> 1 THEN
          RAISE_APPLICATION_ERROR(
-            -20044,
+            cErrorCode,
                'Item table has incompatible columns: '
             || l_table_name
             || '; required ITM_ID, REQ_ID, CREATED_AT, PAYLOAD CLOB, IRES_CODE'
@@ -499,7 +500,7 @@ IS
                p_details_text => TO_CLOB(l_failure_info)
             );
             RAISE_APPLICATION_ERROR(
-               -20045,
+               cErrorCode,
                'MI_Request_Sup rollback failed; caller ROLLBACK is required'
             );
          END IF;
@@ -523,7 +524,7 @@ IS
                   )
             );
             RAISE_APPLICATION_ERROR(
-               -20045,
+               cErrorCode,
                'MI_Request_Sup rollback failed; caller ROLLBACK is required'
             );
          END IF;
