@@ -479,83 +479,59 @@ IS
    )
    IS
    BEGIN
-      SELECT null_If_Empty(
-                JSON_VALUE(
-                   p_person_json,
-                   '$.lastName' RETURNING VARCHAR2(50) ERROR ON ERROR
-                )
+      SELECT JSON_VALUE(
+                p_person_json,
+                '$.lastName' RETURNING VARCHAR2(50) ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_person_json,
-                   '$.firstName' RETURNING VARCHAR2(50) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_person_json,
+                '$.firstName' RETURNING VARCHAR2(50) ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_person_json,
-                   '$.middleName' RETURNING VARCHAR2(50) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_person_json,
+                '$.middleName' RETURNING VARCHAR2(50) ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_person_json,
-                   '$.inn' RETURNING VARCHAR2(13) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_person_json,
+                '$.inn' RETURNING VARCHAR2(13) ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_person_json,
-                   '$.snils' RETURNING VARCHAR2(20) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_person_json,
+                '$.snils' RETURNING VARCHAR2(20) ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_person_json,
-                   '$.birthday' RETURNING VARCHAR2(20) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_person_json,
+                '$.birthday' RETURNING VARCHAR2(20) ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_person_json,
-                   '$.personalDoc.documentType.code'
-                   RETURNING VARCHAR2(20) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_person_json,
+                '$.personalDoc.documentType.code'
+                RETURNING VARCHAR2(20) ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_person_json,
-                   '$.personalDoc.documentSeries'
-                   RETURNING VARCHAR2(10) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_person_json,
+                '$.personalDoc.documentSeries'
+                RETURNING VARCHAR2(10) ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_person_json,
-                   '$.personalDoc.documentNumber'
-                   RETURNING VARCHAR2(20) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_person_json,
+                '$.personalDoc.documentNumber'
+                RETURNING VARCHAR2(20) ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_person_json,
-                   '$.personalDoc.documentIssueDate'
-                   RETURNING VARCHAR2(20) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_person_json,
+                '$.personalDoc.documentIssueDate'
+                RETURNING VARCHAR2(20) ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_person_json,
-                   '$.personalDoc.documentIssuer.code'
-                   RETURNING VARCHAR2(20) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_person_json,
+                '$.personalDoc.documentIssuer.code'
+                RETURNING VARCHAR2(20) ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_person_json,
-                   '$.personalDoc.documentIssuer.name'
-                   RETURNING VARCHAR2(500) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_person_json,
+                '$.personalDoc.documentIssuer.name'
+                RETURNING VARCHAR2(500) ERROR ON ERROR
              )
         INTO p_person.last_name,
              p_person.first_name,
@@ -570,6 +546,20 @@ IS
              p_person.doc_issuer_code,
              p_person.doc_issuer_name
         FROM dual;
+
+      p_person.last_name       := null_If_Empty(p_person.last_name);
+      p_person.first_name      := null_If_Empty(p_person.first_name);
+      p_person.middle_name     := null_If_Empty(p_person.middle_name);
+      p_person.inn             := null_If_Empty(p_person.inn);
+      p_person.snils           := null_If_Empty(p_person.snils);
+      p_person.birth_date      := null_If_Empty(p_person.birth_date);
+      p_person.doc_type_id     := NULL;
+      p_person.doc_type_code   := null_If_Empty(p_person.doc_type_code);
+      p_person.doc_ser         := null_If_Empty(p_person.doc_ser);
+      p_person.doc_num         := null_If_Empty(p_person.doc_num);
+      p_person.doc_issue_date  := null_If_Empty(p_person.doc_issue_date);
+      p_person.doc_issuer_code := null_If_Empty(p_person.doc_issuer_code);
+      p_person.doc_issuer_name := null_If_Empty(p_person.doc_issuer_name);
 
       IF p_person.doc_type_code IS NOT NULL THEN
          SELECT MIN(PUD.IPUDID)
@@ -613,46 +603,40 @@ IS
 
       l_dbeg_reg     MI_P2A.DBEG_REG%TYPE;
       l_dend_reg     MI_P2A.DEND_REG%TYPE;
+      l_dbeg_reg_text VARCHAR2(20);
+      l_dend_reg_text VARCHAR2(20);
    BEGIN
       IF p_addr_json IS NULL THEN
          RETURN;
       END IF;
 
-      SELECT null_If_Empty(JSON_VALUE(p_addr_json, '$.postalCode' RETURNING VARCHAR2(6) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.region.code' RETURNING VARCHAR2(2) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.region.type' RETURNING VARCHAR2(30) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.region.value' RETURNING VARCHAR2(50) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.area.type' RETURNING VARCHAR2(30) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.area.value' RETURNING VARCHAR2(100) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.city.type' RETURNING VARCHAR2(30) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.city.value' RETURNING VARCHAR2(50) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.place.type' RETURNING VARCHAR2(30) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.place.value' RETURNING VARCHAR2(250) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.street.type' RETURNING VARCHAR2(30) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.street.value' RETURNING VARCHAR2(200) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.house' RETURNING VARCHAR2(100) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.building1' RETURNING VARCHAR2(100) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.apartment' RETURNING VARCHAR2(100) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.fiasCode' RETURNING VARCHAR2(36) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.building2' RETURNING VARCHAR2(100) ERROR ON ERROR)),
-             null_If_Empty(JSON_VALUE(p_addr_json, '$.fullAddress' RETURNING VARCHAR2(250) ERROR ON ERROR)),
-             parse_Date(
-                null_If_Empty(
-                   JSON_VALUE(
-                      p_addr_json,
-                      '$.startDateRegistration'
-                      RETURNING VARCHAR2(20) ERROR ON ERROR
-                   )
-                )
+      SELECT JSON_VALUE(p_addr_json, '$.postalCode' RETURNING VARCHAR2(6) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.region.code' RETURNING VARCHAR2(2) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.region.type' RETURNING VARCHAR2(30) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.region.value' RETURNING VARCHAR2(50) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.area.type' RETURNING VARCHAR2(30) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.area.value' RETURNING VARCHAR2(100) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.city.type' RETURNING VARCHAR2(30) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.city.value' RETURNING VARCHAR2(50) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.place.type' RETURNING VARCHAR2(30) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.place.value' RETURNING VARCHAR2(250) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.street.type' RETURNING VARCHAR2(30) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.street.value' RETURNING VARCHAR2(200) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.house' RETURNING VARCHAR2(100) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.building1' RETURNING VARCHAR2(100) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.apartment' RETURNING VARCHAR2(100) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.fiasCode' RETURNING VARCHAR2(36) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.building2' RETURNING VARCHAR2(100) ERROR ON ERROR),
+             JSON_VALUE(p_addr_json, '$.fullAddress' RETURNING VARCHAR2(250) ERROR ON ERROR),
+             JSON_VALUE(
+                p_addr_json,
+                '$.startDateRegistration'
+                RETURNING VARCHAR2(20) ERROR ON ERROR
              ),
-             parse_Date(
-                null_If_Empty(
-                   JSON_VALUE(
-                      p_addr_json,
-                      '$.endDateRegistration'
-                      RETURNING VARCHAR2(20) ERROR ON ERROR
-                   )
-                )
+             JSON_VALUE(
+                p_addr_json,
+                '$.endDateRegistration'
+                RETURNING VARCHAR2(20) ERROR ON ERROR
              )
         INTO l_postcode,
              l_region_code,
@@ -672,9 +656,30 @@ IS
              l_fias_code,
              l_strct,
              l_full_address,
-             l_dbeg_reg,
-             l_dend_reg
+             l_dbeg_reg_text,
+             l_dend_reg_text
         FROM dual;
+
+      l_postcode     := null_If_Empty(l_postcode);
+      l_region_code  := null_If_Empty(l_region_code);
+      l_region_type  := null_If_Empty(l_region_type);
+      l_region_name  := null_If_Empty(l_region_name);
+      l_area_type    := null_If_Empty(l_area_type);
+      l_area_name    := null_If_Empty(l_area_name);
+      l_city_type    := null_If_Empty(l_city_type);
+      l_city_name    := null_If_Empty(l_city_name);
+      l_place_type   := null_If_Empty(l_place_type);
+      l_place_name   := null_If_Empty(l_place_name);
+      l_street_type  := null_If_Empty(l_street_type);
+      l_street_name  := null_If_Empty(l_street_name);
+      l_house        := null_If_Empty(l_house);
+      l_build        := null_If_Empty(l_build);
+      l_apart        := null_If_Empty(l_apart);
+      l_fias_code    := null_If_Empty(l_fias_code);
+      l_strct        := null_If_Empty(l_strct);
+      l_full_address := null_If_Empty(l_full_address);
+      l_dbeg_reg     := parse_Date(null_If_Empty(l_dbeg_reg_text));
+      l_dend_reg     := parse_Date(null_If_Empty(l_dend_reg_text));
 
       IF l_full_address IS NULL
          AND l_postcode IS NULL
@@ -815,40 +820,30 @@ IS
             );
       END IF;
 
-      SELECT null_If_Empty(
-                JSON_VALUE(
-                   p_payload_text,
-                   '$.kind' RETURNING VARCHAR2(50) ERROR ON ERROR
-                )
+      SELECT JSON_VALUE(
+                p_payload_text,
+                '$.kind' RETURNING VARCHAR2(50) ERROR ON ERROR
              ),
              JSON_VALUE(
                 p_payload_text,
                 '$.orderId' RETURNING NUMBER ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_payload_text,
-                   '$.orderTimestamp' RETURNING VARCHAR2(100) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_payload_text,
+                '$.orderTimestamp' RETURNING VARCHAR2(100) ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_payload_text,
-                   '$.subservice.code' RETURNING VARCHAR2(100) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_payload_text,
+                '$.subservice.code' RETURNING VARCHAR2(100) ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_payload_text,
-                   '$.subservice.title' RETURNING VARCHAR2(500) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_payload_text,
+                '$.subservice.title' RETURNING VARCHAR2(500) ERROR ON ERROR
              ),
-             null_If_Empty(
-                JSON_VALUE(
-                   p_payload_text,
-                   '$.subservice.anyData.Product_Type.What_kind_agreement'
-                   RETURNING VARCHAR2(50) ERROR ON ERROR
-                )
+             JSON_VALUE(
+                p_payload_text,
+                '$.subservice.anyData.Product_Type.What_kind_agreement'
+                RETURNING VARCHAR2(50) ERROR ON ERROR
              ),
              JSON_QUERY(
                 p_payload_text,
@@ -887,6 +882,12 @@ IS
              l_variant_data,
              l_documents
         FROM dual;
+
+      l_kind             := null_If_Empty(l_kind);
+      l_order_time_text  := null_If_Empty(l_order_time_text);
+      l_subservice_code  := null_If_Empty(l_subservice_code);
+      l_subservice_title := null_If_Empty(l_subservice_title);
+      l_agreement        := null_If_Empty(l_agreement);
 
       IF l_person_json IS NULL THEN
          l_person_json := l_foreign_person;
