@@ -1135,8 +1135,8 @@ IS
    )
       RETURN VARCHAR2
    IS
-      l_parameters SYS.ODCIVARCHAR2LIST :=
-         SYS.ODCIVARCHAR2LIST(TO_CHAR(p_itm_id));
+      l_parameters AC.T_TabParameter :=
+         AC.T_TabParameter(TO_CHAR(p_itm_id));
    BEGIN
       RETURN
          AC.Get_Value2(
