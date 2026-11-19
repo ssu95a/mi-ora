@@ -117,6 +117,25 @@ IS
       );
 
 
+   TYPE Person_Data_t IS RECORD
+   (
+      last_name        MI_PERSON.LAST_NAME%TYPE,
+      first_name       MI_PERSON.FIRST_NAME%TYPE,
+      middle_name      MI_PERSON.MIDDLE_NAME%TYPE,
+      inn              MI_PERSON.INN%TYPE,
+      snils            MI_PERSON.SNILS%TYPE,
+      birth_date       VARCHAR2(20),
+
+      doc_type_id      MI_PERSON.DOC_TYPE_ID%TYPE,
+      doc_type_code    MI_PERSON.DOC_TYPE_CODE%TYPE,
+      doc_ser          MI_PERSON.DOC_SER%TYPE,
+      doc_num          MI_PERSON.DOC_NUM%TYPE,
+      doc_issue_date   VARCHAR2(20),
+      doc_issuer_code  MI_PERSON.DOC_ISSUER_CODE%TYPE,
+      doc_issuer_name  MI_PERSON.DOC_ISSUER_NAME%TYPE
+   );
+
+
    ---------------------------------------------------------------------------
    PROCEDURE rollback_Or_Raise (
       p_name  IN OUT NOCOPY DCL.T_Name,
@@ -148,25 +167,6 @@ IS
          );
       END IF;
    END rollback_Or_Raise;
-
-
-   TYPE Person_Data_t IS RECORD
-   (
-      last_name        MI_PERSON.LAST_NAME%TYPE,
-      first_name       MI_PERSON.FIRST_NAME%TYPE,
-      middle_name      MI_PERSON.MIDDLE_NAME%TYPE,
-      inn              MI_PERSON.INN%TYPE,
-      snils            MI_PERSON.SNILS%TYPE,
-      birth_date       VARCHAR2(20),
-
-      doc_type_id      MI_PERSON.DOC_TYPE_ID%TYPE,
-      doc_type_code    MI_PERSON.DOC_TYPE_CODE%TYPE,
-      doc_ser          MI_PERSON.DOC_SER%TYPE,
-      doc_num          MI_PERSON.DOC_NUM%TYPE,
-      doc_issue_date   VARCHAR2(20),
-      doc_issuer_code  MI_PERSON.DOC_ISSUER_CODE%TYPE,
-      doc_issuer_name  MI_PERSON.DOC_ISSUER_NAME%TYPE
-   );
 
 
    ---------------------------------------------------------------------------
