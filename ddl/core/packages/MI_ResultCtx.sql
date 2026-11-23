@@ -4,7 +4,7 @@ IS
 
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.3.0} {19.11.2026} Sulimoff$';
+      '$Id: {1.4.0} {23.11.2026} Sulimoff$';
 
 
    cResult_Success CONSTANT VARCHAR2(100) := 'SUCCESS';
@@ -138,13 +138,13 @@ IS
    /*
       Разобрать синхронный XXLResponse.
 
-      Oracle 12.1 не предоставляет JSON_OBJECT_T. Поэтому JSON object из
-      элемента parameters разбирается без зависимости от APEX_JSON:
+      XXLResponse 1.1 передаёт parameters как JSON-массив объектов:
 
-         scalar string  -> декодированная строка;
-         number/boolean -> JSON lexical value;
-         object/array   -> JSON text;
-         null           -> NULL.
+         [{"name":"parameter_name","value":"parameter_value"}]
+
+      value является строкой либо JSON null. Такое представление позволяет
+      Oracle 12.1 разобрать произвольные имена через JSON_TABLE без ручного
+      JSON parser и без зависимости от APEX_JSON.
 
       Имена ограничены контрактом ParameterList_t (100 символов), значения —
       2000 символов. Значение, которое нельзя представить без потери данных,
@@ -244,6 +244,9 @@ END MI_ResultCtx;
 CREATE OR REPLACE PACKAGE BODY MI_ResultCtx
 IS
    PRAGMA SERIALLY_REUSABLE;
+
+
+   cXxl_Response_Version CONSTANT VARCHAR2(10) := '1.1';
 
 
    g_exec_result exec_Result_t;
@@ -529,192 +532,16 @@ IS
       );
    END response_Parse_Error;
 
-
-   ---------------------------------------------------------------------------
-   FUNCTION json_Char (
-      p_json  IN CLOB,
-      p_pos   IN PLS_INTEGER
-   )
-      RETURN VARCHAR2
-   IS
-   BEGIN
-      RETURN DBMS_LOB.SUBSTR(p_json, 1, p_pos);
-   END json_Char;
-
-
-   ---------------------------------------------------------------------------
-   PROCEDURE json_Skip_Whitespace (
-      p_json  IN     CLOB,
-      p_pos   IN OUT PLS_INTEGER,
-      p_len   IN     PLS_INTEGER
-   )
-   IS
-      l_char VARCHAR2(1);
-   BEGIN
-      WHILE p_pos <= p_len LOOP
-         l_char := json_Char(p_json, p_pos);
-         EXIT WHEN l_char NOT IN (' ', CHR(9), CHR(10), CHR(13));
-         p_pos := p_pos + 1;
-      END LOOP;
-   END json_Skip_Whitespace;
-
-
-   ---------------------------------------------------------------------------
-   FUNCTION json_String_End (
-      p_json       IN CLOB,
-      p_start_pos  IN PLS_INTEGER,
-      p_len        IN PLS_INTEGER
-   )
-      RETURN PLS_INTEGER
-   IS
-      l_pos   PLS_INTEGER := p_start_pos + 1;
-      l_char  VARCHAR2(1);
-   BEGIN
-      WHILE l_pos <= p_len LOOP
-         l_char := json_Char(p_json, l_pos);
-
-         IF l_char = CHR(92) THEN
-            l_pos := l_pos + 2;
-         ELSIF l_char = '"' THEN
-            RETURN l_pos;
-         ELSE
-            l_pos := l_pos + 1;
-         END IF;
-      END LOOP;
-
-      response_Parse_Error('unterminated JSON string');
-      RETURN NULL;
-   END json_String_End;
-
-
-   ---------------------------------------------------------------------------
-   FUNCTION json_Composite_End (
-      p_json       IN CLOB,
-      p_start_pos  IN PLS_INTEGER,
-      p_len        IN PLS_INTEGER
-   )
-      RETURN PLS_INTEGER
-   IS
-      l_pos    PLS_INTEGER := p_start_pos;
-      l_depth  PLS_INTEGER := 0;
-      l_char   VARCHAR2(1);
-   BEGIN
-      WHILE l_pos <= p_len LOOP
-         l_char := json_Char(p_json, l_pos);
-
-         IF l_char = '"' THEN
-            l_pos := json_String_End(p_json, l_pos, p_len) + 1;
-         ELSE
-            IF l_char IN ('{', '[') THEN
-               l_depth := l_depth + 1;
-            ELSIF l_char IN ('}', ']') THEN
-               l_depth := l_depth - 1;
-
-               IF l_depth = 0 THEN
-                  RETURN l_pos;
-               END IF;
-            END IF;
-
-            l_pos := l_pos + 1;
-         END IF;
-      END LOOP;
-
-      response_Parse_Error('unterminated JSON object or array');
-      RETURN NULL;
-   END json_Composite_End;
-
-
-   ---------------------------------------------------------------------------
-   FUNCTION json_Value_End (
-      p_json       IN CLOB,
-      p_start_pos  IN PLS_INTEGER,
-      p_len        IN PLS_INTEGER
-   )
-      RETURN PLS_INTEGER
-   IS
-      l_pos   PLS_INTEGER := p_start_pos;
-      l_char  VARCHAR2(1);
-   BEGIN
-      l_char := json_Char(p_json, l_pos);
-
-      IF l_char = '"' THEN
-         RETURN json_String_End(p_json, l_pos, p_len);
-      ELSIF l_char IN ('{', '[') THEN
-         RETURN json_Composite_End(p_json, l_pos, p_len);
-      END IF;
-
-      WHILE l_pos <= p_len LOOP
-         l_char := json_Char(p_json, l_pos);
-         EXIT WHEN l_char IN (',', '}');
-         l_pos := l_pos + 1;
-      END LOOP;
-
-      RETURN l_pos - 1;
-   END json_Value_End;
-
-
-   ---------------------------------------------------------------------------
-   FUNCTION decode_Json_String (
-      p_json       IN CLOB,
-      p_start_pos  IN PLS_INTEGER,
-      p_end_pos    IN PLS_INTEGER
-   )
-      RETURN VARCHAR2
-   IS
-      l_json_value  CLOB;
-      l_value       VARCHAR2(2000);
-   BEGIN
-      DBMS_LOB.CREATETEMPORARY(l_json_value, TRUE, DBMS_LOB.CALL);
-      DBMS_LOB.WRITEAPPEND(l_json_value, 1, '[');
-      DBMS_LOB.COPY(
-         dest_lob     => l_json_value,
-         src_lob      => p_json,
-         amount       => p_end_pos - p_start_pos + 1,
-         dest_offset  => 2,
-         src_offset   => p_start_pos
-      );
-      DBMS_LOB.WRITEAPPEND(l_json_value, 1, ']');
-
-      SELECT JSON_VALUE(
-                l_json_value,
-                '$[0]' RETURNING VARCHAR2(2000) ERROR ON ERROR
-             )
-        INTO l_value
-        FROM DUAL;
-
-      DBMS_LOB.FREETEMPORARY(l_json_value);
-      RETURN l_value;
-
-   EXCEPTION
-      WHEN OTHERS THEN
-         IF DBMS_LOB.ISTEMPORARY(l_json_value) = 1 THEN
-            DBMS_LOB.FREETEMPORARY(l_json_value);
-         END IF;
-
-         response_Parse_Error(
-            'JSON string parameter cannot be represented in 2000 characters'
-         );
-         RETURN NULL;
-   END decode_Json_String;
-
-
    ---------------------------------------------------------------------------
    PROCEDURE parse_Json_Parameters (
       p_json        IN     CLOB,
       p_parameters  IN OUT NOCOPY MI_Utils.ParameterList_t
    )
    IS
-      l_is_json       PLS_INTEGER;
-      l_len           PLS_INTEGER;
-      l_pos           PLS_INTEGER := 1;
-      l_key_start     PLS_INTEGER;
-      l_key_end       PLS_INTEGER;
-      l_value_start   PLS_INTEGER;
-      l_value_end     PLS_INTEGER;
-      l_value_len     PLS_INTEGER;
-      l_key           VARCHAR2(2000);
-      l_value         VARCHAR2(2000);
-      l_char          VARCHAR2(1);
+      TYPE SeenNameSet_t IS TABLE OF BOOLEAN INDEX BY VARCHAR2(100);
+
+      l_seen_names  SeenNameSet_t;
+      l_is_json     PLS_INTEGER;
    BEGIN
       IF p_json IS NULL THEN
          RETURN;
@@ -731,117 +558,52 @@ IS
          response_Parse_Error('parameters is not strict JSON');
       END IF;
 
-      l_len := DBMS_LOB.getlength(p_json);
-      json_Skip_Whitespace(p_json, l_pos, l_len);
-
-      IF l_pos > l_len OR json_Char(p_json, l_pos) <> '{' THEN
-         response_Parse_Error('parameters must be a JSON object');
+      IF NOT REGEXP_LIKE(p_json, '^[[:space:]]*\[') THEN
+         response_Parse_Error('parameters must be a JSON array');
       END IF;
 
-      l_pos := l_pos + 1;
-      json_Skip_Whitespace(p_json, l_pos, l_len);
-
-      IF l_pos <= l_len AND json_Char(p_json, l_pos) = '}' THEN
-         RETURN;
-      END IF;
-
-      LOOP
-         IF l_pos > l_len OR json_Char(p_json, l_pos) <> '"' THEN
-            response_Parse_Error('JSON parameter name expected');
-         END IF;
-
-         l_key_start := l_pos;
-         l_key_end := json_String_End(p_json, l_key_start, l_len);
-
-         l_key :=
-            decode_Json_String(
-               p_json      => p_json,
-               p_start_pos => l_key_start,
-               p_end_pos   => l_key_end
+      FOR r_parameter IN (
+         SELECT p.parameter_no,
+                p.parameter_name,
+                p.parameter_value
+           FROM JSON_TABLE(
+                   p_json,
+                   '$[*]' ERROR ON ERROR
+                   COLUMNS
+                   (
+                      parameter_no     FOR ORDINALITY,
+                      parameter_name   VARCHAR2(100)
+                         PATH '$.name' ERROR ON ERROR,
+                      parameter_value  VARCHAR2(2000)
+                         PATH '$.value' ERROR ON ERROR
+                   )
+                ) p
+          ORDER BY p.parameter_no
+      ) LOOP
+         IF r_parameter.parameter_name IS NULL THEN
+            response_Parse_Error(
+               'parameter name must contain 1..100 characters'
             );
-
-         IF l_key IS NULL OR LENGTH(l_key) > 100 THEN
-            response_Parse_Error('JSON parameter name must contain 1..100 characters');
          END IF;
 
-         l_pos := l_key_end + 1;
-         json_Skip_Whitespace(p_json, l_pos, l_len);
-
-         IF l_pos > l_len OR json_Char(p_json, l_pos) <> ':' THEN
-            response_Parse_Error('colon expected after JSON parameter name');
+         IF l_seen_names.EXISTS(r_parameter.parameter_name) THEN
+            response_Parse_Error(
+               'duplicate parameter name: ' || r_parameter.parameter_name
+            );
          END IF;
 
-         l_pos := l_pos + 1;
-         json_Skip_Whitespace(p_json, l_pos, l_len);
-
-         IF l_pos > l_len THEN
-            response_Parse_Error('JSON parameter value expected');
-         END IF;
-
-         l_value_start := l_pos;
-         l_value_end := json_Value_End(p_json, l_value_start, l_len);
-         l_value_len := l_value_end - l_value_start + 1;
-         l_char := json_Char(p_json, l_value_start);
-
-         IF l_char = '"' THEN
-            l_value :=
-               decode_Json_String(
-                  p_json      => p_json,
-                  p_start_pos => l_value_start,
-                  p_end_pos   => l_value_end
-               );
-         ELSIF l_char IN ('{', '[') THEN
-            IF l_value_len > 2000 THEN
-               response_Parse_Error(
-                  'JSON parameter object or array exceeds 2000 characters'
-               );
-            END IF;
-
-            l_value := DBMS_LOB.SUBSTR(p_json, l_value_len, l_value_start);
-         ELSE
-            WHILE l_value_end >= l_value_start
-              AND json_Char(p_json, l_value_end) IN
-                     (' ', CHR(9), CHR(10), CHR(13))
-            LOOP
-               l_value_end := l_value_end - 1;
-            END LOOP;
-
-            l_value_len := l_value_end - l_value_start + 1;
-
-            IF l_value_len > 2000 THEN
-               response_Parse_Error(
-                  'JSON scalar parameter exceeds 2000 characters'
-               );
-            END IF;
-
-            l_value := DBMS_LOB.SUBSTR(p_json, l_value_len, l_value_start);
-
-            IF LOWER(l_value) = 'null' THEN
-               l_value := NULL;
-            END IF;
-         END IF;
-
-         p_parameters(l_key) := l_value;
-
-         l_pos := l_value_end + 1;
-         json_Skip_Whitespace(p_json, l_pos, l_len);
-
-         IF l_pos > l_len THEN
-            response_Parse_Error('unterminated parameters object');
-         END IF;
-
-         l_char := json_Char(p_json, l_pos);
-
-         IF l_char = '}' THEN
-            EXIT;
-         ELSIF l_char <> ',' THEN
-            response_Parse_Error('comma expected between JSON parameters');
-         END IF;
-
-         l_pos := l_pos + 1;
-         json_Skip_Whitespace(p_json, l_pos, l_len);
+         l_seen_names(r_parameter.parameter_name) := TRUE;
+         p_parameters(r_parameter.parameter_name) :=
+            r_parameter.parameter_value;
       END LOOP;
 
+   EXCEPTION
+      WHEN OTHERS THEN
+         IF SQLCODE = -20011 THEN
+            RAISE;
+         END IF;
+
+         response_Parse_Error('invalid parameters array: ' || SQLERRM);
    END parse_Json_Parameters;
 
 
@@ -922,8 +684,11 @@ IS
       l_version := TRIM(l_version);
       l_action := TRIM(l_action);
 
-      IF l_version IS NOT NULL AND l_version <> '1.0' THEN
-         response_Parse_Error('unsupported XXLResponse version');
+      IF l_version IS NULL OR l_version <> cXxl_Response_Version THEN
+         response_Parse_Error(
+               'unsupported XXLResponse version: expected '
+            || cXxl_Response_Version
+         );
       END IF;
 
       l_boolean_text := LOWER(TRIM(l_is_success_text));
