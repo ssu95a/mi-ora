@@ -1,10 +1,10 @@
 CREATE OR REPLACE PACKAGE MI_0607_Api
 IS
 
-   /* MI-edo. DOCUMENT_RECEIVED вида сведений 607 */
+   /* MI-edo. DOCUMENT_RECEIVED видов сведений 607 и 608 */
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.3.1} {23.11.2026} Sulimoff$';
+      '$Id: {1.4.0} {24.11.2026} Sulimoff$';
 
 
    RET_FAIL               CONSTANT PLS_INTEGER := -1;
@@ -73,13 +73,39 @@ IS
       p_ret_info          OUT VARCHAR2
    );
 
+   /* Общая обработка входящих ВС 607 и 608. */
+   PROCEDURE process_Document_Received (
+      p_original_req_uuid IN  MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_message_uuid      IN  MI_REQ.MESSAGE_UUID%TYPE,
+      p_correlation_id    IN  MI_REQ.CORRELATION_ID%TYPE,
+
+      p_task_id           IN  RSD_BASES.TASKID%TYPE,
+      p_doc_type          IN  RSD_BASES.FILE_TYPE%TYPE,
+      p_doc_date          IN  RSD_BASES.DOCDATE%TYPE,
+
+      p_file_name         IN  RSD_BASES.FILE_NAME%TYPE,
+      p_file_body         IN  MI_0600.BZIP_DATA%TYPE,
+
+      p_req_id            OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id            OUT MI_0600.ITM_ID%TYPE,
+
+      p_base_id           OUT RSD_BASES.ID%TYPE,
+      p_file_type         OUT RSD_BASES.FILE_TYPE%TYPE,
+      p_parse_result      OUT NUMBER,
+
+      p_ret_code          OUT NUMBER,
+      p_ret_info          OUT VARCHAR2,
+      p_inf_id            IN  MI_REQ.INF_ID%TYPE
+   );
+
 END MI_0607_Api;
 /
 CREATE OR REPLACE PACKAGE BODY MI_0607_Api
 IS
 
    cLogger CONSTANT VARCHAR2(64)        := 'mi.0607';
-   cInfId  CONSTANT MI_REQ.INF_ID%TYPE := 607;
+   cInf607 CONSTANT MI_REQ.INF_ID%TYPE := 607;
+   cInf608 CONSTANT MI_REQ.INF_ID%TYPE := 608;
 
    /* глобальный логгер */
    g_log CONSTANT MI_Logger_T :=
@@ -115,6 +141,7 @@ IS
 
    /* */
    FUNCTION journal_Name (
+      p_inf_id            IN MI_REQ.INF_ID%TYPE,
       p_original_req_uuid IN MI_REQ.ORIGINAL_REQ_UUID%TYPE
    )
       RETURN MI_0600.CZIP_NAME%TYPE
@@ -123,11 +150,11 @@ IS
       /*
          MI_0600.CZIP_NAME имеет глобальный UNIQUE constraint.
 
-         Для 607 это не имя ZIP, а технический ключ requestId входящего
+         Это технический ключ requestId входящего
          документа. Исходное имя документа хранится в MI_0600_F.
       */
-      RETURN 'MI_0607_' || LOWER(TRIM(p_original_req_uuid));
-      
+      RETURN CASE p_inf_id WHEN cInf608 THEN 'MI_0608_' ELSE 'MI_0607_' END
+             || LOWER(TRIM(p_original_req_uuid));
    END journal_Name;
 
 
@@ -163,6 +190,7 @@ IS
 
    /* Проверяет регистрацию requestId входящего DOCUMENT_RECEIVED. */
    FUNCTION duplicate_Request_Exists (
+      p_inf_id            IN MI_REQ.INF_ID%TYPE,
       p_original_req_uuid IN MI_REQ.ORIGINAL_REQ_UUID%TYPE
    )
       RETURN BOOLEAN
@@ -172,7 +200,7 @@ IS
       SELECT COUNT(*)
         INTO l_request_count
         FROM MI_REQ r
-       WHERE r.INF_ID = cInfId
+       WHERE r.INF_ID = p_inf_id
          AND LOWER(TRIM(r.ORIGINAL_REQ_UUID)) = p_original_req_uuid;
 
       RETURN l_request_count > 0;
@@ -200,7 +228,8 @@ IS
       p_parse_result      OUT NUMBER,
 
       p_ret_code          OUT NUMBER,
-      p_ret_info          OUT VARCHAR2
+      p_ret_info          OUT VARCHAR2,
+      p_inf_id            IN  MI_REQ.INF_ID%TYPE
    )
    IS
       l_doc_type            RSD_BASES.FILE_TYPE%TYPE;
@@ -257,7 +286,7 @@ IS
             );
 
          l_log.context(
-            p_inf_id         => cInfId,
+            p_inf_id         => p_inf_id,
             p_correlation_id => l_input_correlation
          );
 
@@ -337,6 +366,10 @@ IS
       p_ret_code     := RET_FAIL;
       p_ret_info     := NULL;
 
+      IF p_inf_id IS NULL OR p_inf_id NOT IN (cInf607, cInf608) THEN
+         p_ret_info := 'MI_0607_INVALID_INF_ID: expected 607 or 608';
+         RETURN;
+      END IF;
 
       l_message_uuid      := TRIM(p_message_uuid);
       l_original_req_uuid := LOWER(TRIM(p_original_req_uuid));
@@ -347,7 +380,7 @@ IS
 
 
       l_log.context(
-         p_inf_id         => cInfId,
+         p_inf_id         => p_inf_id,
          p_correlation_id => l_input_correlation
       );
 
@@ -446,9 +479,9 @@ IS
          );
       END IF;
 
-      l_journal_name := journal_Name(l_original_req_uuid);
+      l_journal_name := journal_Name(p_inf_id, l_original_req_uuid);
 
-      IF duplicate_Request_Exists(l_original_req_uuid) THEN
+      IF duplicate_Request_Exists(p_inf_id, l_original_req_uuid) THEN
          return_Duplicate_Request;
          RETURN;
       END IF;
@@ -459,7 +492,7 @@ IS
       -- 1. MI_REQ: durable integration journal header.
       l_request_result :=
          MI_Request_Api.create_Request(
-            p_inf_id            => cInfId,
+            p_inf_id            => p_inf_id,
             p_correlation_id    => l_input_correlation,
             p_original_req_uuid => l_original_req_uuid,
             p_ctaxreq_id        => l_task_id,
@@ -491,7 +524,7 @@ IS
          END IF;
 
 
-         IF duplicate_Request_Exists(l_original_req_uuid) THEN
+         IF duplicate_Request_Exists(p_inf_id, l_original_req_uuid) THEN
             return_Duplicate_Request;
             RETURN;
          END IF;
@@ -577,7 +610,7 @@ IS
 
 
       l_log.context(
-         p_inf_id         => cInfId,
+         p_inf_id         => p_inf_id,
          p_req_id         => l_req_id,
          p_itm_id         => l_itm_id,
          p_correlation_id => l_correlation_id
@@ -766,7 +799,7 @@ IS
          END IF;
 
 
-         IF duplicate_Request_Exists(l_original_req_uuid) THEN
+         IF duplicate_Request_Exists(p_inf_id, l_original_req_uuid) THEN
             return_Duplicate_Request;
             RETURN;
          END IF;
@@ -815,6 +848,50 @@ IS
          RAISE;
    END process_Document_Received;
 
+
+   PROCEDURE process_Document_Received (
+      p_original_req_uuid IN  MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_message_uuid      IN  MI_REQ.MESSAGE_UUID%TYPE,
+      p_correlation_id    IN  MI_REQ.CORRELATION_ID%TYPE,
+
+      p_task_id           IN  RSD_BASES.TASKID%TYPE,
+      p_doc_type          IN  RSD_BASES.FILE_TYPE%TYPE,
+      p_doc_date          IN  RSD_BASES.DOCDATE%TYPE,
+
+      p_file_name         IN  RSD_BASES.FILE_NAME%TYPE,
+      p_file_body         IN  MI_0600.BZIP_DATA%TYPE,
+
+      p_req_id            OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id            OUT MI_0600.ITM_ID%TYPE,
+
+      p_base_id           OUT RSD_BASES.ID%TYPE,
+      p_file_type         OUT RSD_BASES.FILE_TYPE%TYPE,
+      p_parse_result      OUT NUMBER,
+
+      p_ret_code          OUT NUMBER,
+      p_ret_info          OUT VARCHAR2
+   )
+   IS
+   BEGIN
+      process_Document_Received(
+         p_original_req_uuid => p_original_req_uuid,
+         p_message_uuid      => p_message_uuid,
+         p_correlation_id    => p_correlation_id,
+         p_task_id           => p_task_id,
+         p_doc_type          => p_doc_type,
+         p_doc_date          => p_doc_date,
+         p_file_name         => p_file_name,
+         p_file_body         => p_file_body,
+         p_req_id            => p_req_id,
+         p_itm_id            => p_itm_id,
+         p_base_id           => p_base_id,
+         p_file_type         => p_file_type,
+         p_parse_result      => p_parse_result,
+         p_ret_code          => p_ret_code,
+         p_ret_info          => p_ret_info,
+         p_inf_id            => cInf607
+      );
+   END process_Document_Received;
 
 END MI_0607_Api;
 /

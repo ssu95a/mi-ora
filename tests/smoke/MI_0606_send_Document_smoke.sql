@@ -175,7 +175,7 @@ BEGIN
     WHERE NAME = 'MI_0606_API'
       AND TYPE = 'PACKAGE BODY'
       AND LINE > l_send_line
-      AND UPPER(TRIM(TEXT)) = 'END SEND_DOCUMENT;';
+      AND REGEXP_LIKE(TEXT, '^[[:space:]]*END[[:space:]]+SEND_DOCUMENT[[:space:]]*;[[:space:]]*$', 'i');
 
    SELECT COUNT(*)
      INTO l_side_effect_cnt
