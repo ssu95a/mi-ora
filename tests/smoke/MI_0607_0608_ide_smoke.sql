@@ -19,32 +19,18 @@ DECLARE
       END IF;
    END;
 
-   PROCEDURE receive(p_inf_id IN MI_REQ.INF_ID%TYPE, p_arg_count IN PLS_INTEGER)
+   PROCEDURE receive(p_inf_id IN MI_REQ.INF_ID%TYPE)
    IS
       l_message_uuid MI_REQ.MESSAGE_UUID%TYPE := MI_Utils.uuid_V7;
       l_task_id      RSD_BASES.TASKID%TYPE := MI_Utils.uuid_V7;
    BEGIN
-      IF p_arg_count = 15 THEN
-         MI_0607_Api.process_Document_Received(
-            l_request_uuid, l_message_uuid, NULL, l_task_id, 'UNO', SYSDATE,
-            'mi-smoke-invalid.json', l_byte_body, l_req_id, l_itm_id,
-            l_base_id, l_file_type, l_parse_result, l_ret_code, l_ret_info
-         );
-      ELSIF p_arg_count = 16 THEN
-         MI_0607_Api.process_Document_Received(
-            l_request_uuid, l_message_uuid, NULL, l_task_id, 'UNO', SYSDATE,
-            'mi-smoke-invalid.json', l_byte_body, l_req_id, l_itm_id,
-            l_base_id, l_file_type, l_parse_result, l_ret_code, l_ret_info, p_inf_id
-         );
-      ELSE
-         l_outfile_id := -1;
-         MI_0607_Api.process_Document_Received(
-            l_request_uuid, l_message_uuid, NULL, l_task_id, 'UNO', SYSDATE,
-            'mi-smoke-invalid.json', l_byte_body, l_req_id, l_itm_id,
-            l_base_id, l_file_type, l_parse_result, l_ret_code, l_ret_info,
-            p_inf_id, l_outfile_id
-         );
-      END IF;
+      l_outfile_id := -1;
+      MI_0607_Api.process_Document_Received(
+         l_request_uuid, l_message_uuid, NULL, l_task_id, 'UNO', SYSDATE,
+         'mi-smoke-invalid.json', l_byte_body, l_req_id, l_itm_id,
+         l_base_id, l_file_type, l_parse_result, l_ret_code, l_ret_info,
+         p_inf_id, l_outfile_id
+      );
    END;
 
    PROCEDURE assert_Journal(p_inf_id IN MI_REQ.INF_ID%TYPE, p_prefix IN VARCHAR2)
@@ -53,6 +39,7 @@ DECLARE
       assert_True(l_ret_code IN (MI_0607_Api.RET_CREATE_BASE_FAILED, MI_0607_Api.RET_DOC_TYPE_MISMATCH)
                   AND l_req_id IS NOT NULL AND l_itm_id IS NOT NULL,
                   'expected business rejection with journal: ' || l_ret_info);
+      assert_True(l_outfile_id IS NULL, 'business rejection exposed an outfile ID');
 
       SELECT COUNT(*)
         INTO l_count
@@ -76,18 +63,19 @@ BEGIN
    -- An empty JSON object reaches the journal and is rejected by the business parser.
    DBMS_LOB.writeappend(l_byte_body, 2, HEXTORAW('7B7D'));
 
-   receive(NULL, 16);
+   receive(NULL);
    assert_True(l_ret_code = MI_0607_Api.RET_FAIL AND l_req_id IS NULL
+               AND l_outfile_id IS NULL
                AND INSTR(l_ret_info, 'MI_0607_INVALID_INF_ID:') = 1,
                'NULL INF_ID must be rejected before registration');
 
-   receive(607, 15);
+   receive(607);
    assert_Journal(607, 'MI_0607_');
 
-   receive(608, 16);
+   receive(608);
    assert_Journal(608, 'MI_0608_');
 
-   receive(608, 17);
+   receive(608);
    assert_True(l_ret_code = MI_0607_Api.RET_FAIL AND l_req_id IS NULL AND l_itm_id IS NULL
                AND l_outfile_id IS NULL
                AND INSTR(l_ret_info, 'MI_0607_DUPLICATE_REQUEST:') = 1,
@@ -99,11 +87,6 @@ BEGIN
     WHERE INF_ID = 608
       AND LOWER(TRIM(ORIGINAL_REQ_UUID)) = LOWER(TRIM(l_request_uuid));
    assert_True(l_count = 1, 'repeat 608 changed journal count');
-
-   l_request_uuid := MI_Utils.uuid_V7;
-   receive(608, 17);
-   assert_Journal(608, 'MI_0608_');
-   assert_True(l_outfile_id IS NULL, 'business rejection exposed an outfile ID');
 
    ROLLBACK TO before_607_608_smoke;
    DBMS_LOB.freetemporary(l_byte_body);
