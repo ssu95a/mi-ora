@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_Request_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.2.0} {18.11.2026} Sulimoff$';
+      '$Id: {1.2.1} {19.11.2026} Sulimoff$';
 
 
    SUBTYPE Status_t IS PLS_INTEGER RANGE -1 .. 3;
@@ -444,52 +444,6 @@ IS
 
 
    ---------------------------------------------------------------------------
-   PROCEDURE export_Jdbc_Result (
-      p_result    IN  MI_ResultCtx.exec_Result_t,
-      p_ret_code  OUT NUMBER,
-      p_ret_info  OUT VARCHAR2
-   )
-   IS
-   BEGIN
-      p_ret_code := NULL;
-
-      BEGIN
-         p_ret_code := TO_NUMBER(p_result.parameters('ret_code'));
-      EXCEPTION
-         WHEN NO_DATA_FOUND OR VALUE_ERROR THEN
-            p_ret_code := NULL;
-      END;
-
-      IF p_ret_code IS NULL THEN
-         IF MI_ResultCtx.is_Success(p_result) THEN
-            p_ret_code := RET_OK;
-         ELSE
-            p_ret_code := RET_FAIL;
-         END IF;
-      END IF;
-
-      p_ret_info :=
-         SUBSTR(
-               NVL(p_result.result_code, '<NO_RESULT_CODE>')
-            || ': '
-            || NVL(p_result.result_info, '<NO_RESULT_INFO>')
-            || CASE
-                  WHEN p_result.cause_code IS NOT NULL
-                     OR p_result.cause_info IS NOT NULL
-                  THEN
-                        '; cause='
-                     || NVL(p_result.cause_code, '<NO_CAUSE_CODE>')
-                     || ': '
-                     || NVL(p_result.cause_info, '<NO_CAUSE_INFO>')
-                  ELSE NULL
-               END,
-            1,
-            4000
-         );
-   END export_Jdbc_Result;
-
-
-   ---------------------------------------------------------------------------
    FUNCTION current_State_Failure (
       p_req_id     IN MI_REQ.REQ_ID%TYPE,
       p_operation  IN VARCHAR2,
@@ -810,10 +764,12 @@ IS
             p_info   => p_info
          );
 
-      export_Jdbc_Result(
-         p_result   => l_result,
-         p_ret_code => p_ret_code,
-         p_ret_info => p_ret_info
+      MI_ResultCtx.export_Jdbc_Result(
+         p_result        => l_result,
+         p_success_code  => RET_OK,
+         p_failure_code  => RET_FAIL,
+         p_ret_code      => p_ret_code,
+         p_ret_info      => p_ret_info
       );
    END take_For_Proc;
 
@@ -902,10 +858,12 @@ IS
    BEGIN
       l_result := to_Sent(p_req_id => p_req_id);
 
-      export_Jdbc_Result(
-         p_result   => l_result,
-         p_ret_code => p_ret_code,
-         p_ret_info => p_ret_info
+      MI_ResultCtx.export_Jdbc_Result(
+         p_result        => l_result,
+         p_success_code  => RET_OK,
+         p_failure_code  => RET_FAIL,
+         p_ret_code      => p_ret_code,
+         p_ret_info      => p_ret_info
       );
    END to_Sent;
 
@@ -994,10 +952,12 @@ IS
    BEGIN
       l_result := to_Success(p_req_id => p_req_id);
 
-      export_Jdbc_Result(
-         p_result   => l_result,
-         p_ret_code => p_ret_code,
-         p_ret_info => p_ret_info
+      MI_ResultCtx.export_Jdbc_Result(
+         p_result        => l_result,
+         p_success_code  => RET_OK,
+         p_failure_code  => RET_FAIL,
+         p_ret_code      => p_ret_code,
+         p_ret_info      => p_ret_info
       );
    END to_Success;
 
@@ -1086,54 +1046,14 @@ IS
    BEGIN
       l_result := to_Error(p_req_id => p_req_id);
 
-      export_Jdbc_Result(
-         p_result   => l_result,
-         p_ret_code => p_ret_code,
-         p_ret_info => p_ret_info
+      MI_ResultCtx.export_Jdbc_Result(
+         p_result        => l_result,
+         p_success_code  => RET_OK,
+         p_failure_code  => RET_FAIL,
+         p_ret_code      => p_ret_code,
+         p_ret_info      => p_ret_info
       );
    END to_Error;
-
-
-   ---------------------------------------------------------------------------
-   FUNCTION rollback_Savepoint (
-      p_name IN OUT DCL.T_Name
-   )
-      RETURN BOOLEAN
-   IS
-      l_name    DCL.T_Name;
-      l_result  BOOLEAN;
-   BEGIN
-      IF p_name IS NULL THEN
-         RETURN TRUE;
-      END IF;
-
-      /*
-         Clear first so an error in DCL cannot cause a second rollback attempt
-         from the enclosing exception handler.
-      */
-      l_name := p_name;
-      p_name := NULL;
-
-      l_result := DCL.RollBack(l_name);
-
-      RETURN l_result IS NOT NULL AND l_result;
-
-   EXCEPTION
-      WHEN OTHERS THEN
-         g_log.error(
-            p_message_text => 'DCL rollback failed',
-            p_action_code  => 'rollback',
-            p_details_text =>
-               TO_CLOB(
-                     'savepoint='
-                  || l_name
-                  || '; error='
-                  || SQLERRM
-               )
-         );
-
-         RETURN FALSE;
-   END rollback_Savepoint;
 
 
    ---------------------------------------------------------------------------
@@ -1172,7 +1092,11 @@ IS
       PROCEDURE rollback_For_Result
       IS
       BEGIN
-         IF NOT rollback_Savepoint(l_savepoint_name) THEN
+         IF NOT MI_Transaction.rollback_Savepoint(
+                   p_name => l_savepoint_name,
+                   p_log  => l_log
+                )
+         THEN
             MI_ResultCtx.raise_Error(
                p_code => 'REQUEST_FAILURE_ROLLBACK_FAILED',
                p_info =>
@@ -1460,7 +1384,11 @@ IS
       WHEN OTHERS THEN
          l_sqlcode     := SQLCODE;
          l_sqlerrm     := SQLERRM;
-         l_rollback_ok := rollback_Savepoint(l_savepoint_name);
+         l_rollback_ok :=
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_savepoint_name,
+               p_log  => l_log
+            );
 
          l_log.error(
             p_message_text => 'apply_Request_Failure failed',
@@ -1535,10 +1463,12 @@ IS
             p_occurred_at   => p_occurred_at
          );
 
-      export_Jdbc_Result(
-         p_result   => l_result,
-         p_ret_code => p_ret_code,
-         p_ret_info => p_ret_info
+      MI_ResultCtx.export_Jdbc_Result(
+         p_result        => l_result,
+         p_success_code  => RET_OK,
+         p_failure_code  => RET_FAIL,
+         p_ret_code      => p_ret_code,
+         p_ret_info      => p_ret_info
       );
    END apply_Request_Failure;
 

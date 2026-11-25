@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_Item_Result_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.0.1} {09.11.2026} Sulimoff$';
+      '$Id: {1.0.2} {19.11.2026} Sulimoff$';
 
 
    /*
@@ -322,32 +322,6 @@ IS
 
 
       ------------------------------------------------------------------------
-      PROCEDURE rollback_Own_Work
-      IS
-         l_name         DCL.T_Name;
-         l_rolled_back  BOOLEAN;
-      BEGIN
-         IF l_savepoint_name IS NOT NULL THEN
-            /*
-               Clear first so a DCL error cannot cause a second rollback
-               attempt in the outer exception handler.
-            */
-            l_name           := l_savepoint_name;
-            l_savepoint_name := NULL;
-
-            l_rolled_back := DCL.RollBack(l_name);
-
-            IF NOT l_rolled_back THEN
-               l_log.warn(
-                  p_message_text => 'DCL rollback was not performed',
-                  p_action_code  => 'rollback_skipped'
-               );
-            END IF;
-         END IF;
-      END rollback_Own_Work;
-
-
-      ------------------------------------------------------------------------
       PROCEDURE add_Context (
          p_result IN OUT NOCOPY MI_ResultCtx.exec_Result_t
       )
@@ -638,7 +612,10 @@ IS
 
       EXCEPTION
          WHEN NO_DATA_FOUND THEN
-            rollback_Own_Work;
+            MI_Transaction.rollback_And_Warn(
+               p_name => l_savepoint_name,
+               p_log  => l_log
+            );
 
             RETURN
                failure_Result(
@@ -662,7 +639,10 @@ IS
             MI_Request_Api.STATUS_DONE
          )
       THEN
-         rollback_Own_Work;
+         MI_Transaction.rollback_And_Warn(
+            p_name => l_savepoint_name,
+            p_log  => l_log
+         );
 
          RETURN
             failure_Result(
@@ -698,7 +678,10 @@ IS
 
       EXCEPTION
          WHEN NO_DATA_FOUND THEN
-            rollback_Own_Work;
+            MI_Transaction.rollback_And_Warn(
+               p_name => l_savepoint_name,
+               p_log  => l_log
+            );
 
             RETURN
                failure_Result(
@@ -785,7 +768,10 @@ IS
 
 
       IF l_status_cd = MI_Request_Api.STATUS_DONE THEN
-         rollback_Own_Work;
+         MI_Transaction.rollback_And_Warn(
+            p_name => l_savepoint_name,
+            p_log  => l_log
+         );
 
          RETURN
             failure_Result(
@@ -827,7 +813,10 @@ IS
                l_sqlcode := SQLCODE;
                l_sqlerrm := SQLERRM;
 
-               rollback_Own_Work;
+               MI_Transaction.rollback_And_Warn(
+                  p_name => l_savepoint_name,
+                  p_log  => l_log
+               );
 
                l_log.error(
                   p_message_text => 'Item payload mapping failed',
@@ -849,7 +838,10 @@ IS
 
 
          IF l_ires_code IS NULL THEN
-            rollback_Own_Work;
+            MI_Transaction.rollback_And_Warn(
+               p_name => l_savepoint_name,
+               p_log  => l_log
+            );
 
             RETURN
                failure_Result(
@@ -907,7 +899,10 @@ IS
       l_row_count := SQL%ROWCOUNT;
 
       IF l_row_count <> 1 THEN
-         rollback_Own_Work;
+         MI_Transaction.rollback_And_Warn(
+            p_name => l_savepoint_name,
+            p_log  => l_log
+         );
 
          RETURN
             failure_Result(
@@ -963,7 +958,10 @@ IS
          l_sqlcode := SQLCODE;
          l_sqlerrm := SQLERRM;
 
-         rollback_Own_Work;
+         MI_Transaction.rollback_And_Warn(
+            p_name => l_savepoint_name,
+            p_log  => l_log
+         );
 
          l_log.error(
             p_message_text => 'apply_Item_Result failed',

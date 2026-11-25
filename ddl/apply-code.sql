@@ -44,6 +44,15 @@ SHOW ERRORS TYPE BODY MI_Logger_T
 
 
 PROMPT ------------------------------------------------------------
+PROMPT Core transaction utilities
+PROMPT ------------------------------------------------------------
+
+@ddl/core/packages/MI_Transaction.sql
+SHOW ERRORS PACKAGE MI_Transaction
+SHOW ERRORS PACKAGE BODY MI_Transaction
+
+
+PROMPT ------------------------------------------------------------
 PROMPT Core business API packages
 PROMPT ------------------------------------------------------------
 
@@ -63,6 +72,10 @@ SHOW ERRORS PACKAGE BODY MI_Person_Api
 SHOW ERRORS PACKAGE MI_Item_Result_Api
 SHOW ERRORS PACKAGE BODY MI_Item_Result_Api
 
+@ddl/core/packages/MI_Request_Sup.sql
+SHOW ERRORS PACKAGE MI_Request_Sup
+SHOW ERRORS PACKAGE BODY MI_Request_Sup
+
 
 PROMPT ------------------------------------------------------------
 PROMPT Multi-Bus request preparation
@@ -76,6 +89,10 @@ SHOW ERRORS PACKAGE BODY MI_mbus
 PROMPT ------------------------------------------------------------
 PROMPT Business API packages
 PROMPT ------------------------------------------------------------
+
+@ddl/mi_0202/packages/MI_0202_Api.sql
+SHOW ERRORS PACKAGE MI_0202_Api
+SHOW ERRORS PACKAGE BODY MI_0202_Api
 
 @ddl/mi_0600/packages/MI_0600_Api.sql
 SHOW ERRORS PACKAGE MI_0600_Api

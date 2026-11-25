@@ -2,7 +2,7 @@ CREATE OR REPLACE PACKAGE MI_0606_Api
 IS
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.2.0} {16.11.2026} Sulimoff$';
+      '$Id: {1.3.0} {24.11.2026} Sulimoff$';
 
 
    ---------------------------------------------------------------------------
@@ -26,6 +26,26 @@ IS
 
    FUNCTION get_Version
       RETURN VARCHAR2;
+
+
+   ---------------------------------------------------------------------------
+   /*
+      Публикует команду send_document для одной записи RSD_OUTFILES.
+
+      Процедура является только transport facade:
+         - не создаёт MI_REQ и не изменяет business tables;
+         - не выполняет COMMIT / ROLLBACK;
+         - не повторяет отправку при неопределённом delivery outcome.
+
+      Создание request и перевод его состояния остаются на стороне Java.
+   */
+   PROCEDURE send_Document (
+      p_outfile_id  IN  NUMBER,
+
+      p_req_id      OUT NUMBER,
+      p_ret_code    OUT NUMBER,
+      p_ret_info    OUT VARCHAR2
+   );
 
 
    ---------------------------------------------------------------------------
@@ -235,6 +255,173 @@ IS
    END get_Version;
 
 
+   ---------------------------------------------------------------------------
+   PROCEDURE send_Document (
+      p_outfile_id  IN  NUMBER,
+
+      p_req_id      OUT NUMBER,
+      p_ret_code    OUT NUMBER,
+      p_ret_info    OUT VARCHAR2
+   )
+   IS
+      l_result            MI_ResultCtx.exec_Result_t;
+      l_result_req_id     NUMBER;
+      l_parameters        CLOB;
+      l_delivery_outcome  VARCHAR2(2000);
+      l_retry_safe        VARCHAR2(2000);
+      l_is_ambiguous      BOOLEAN := FALSE;
+   BEGIN
+      p_req_id   := NULL;
+      p_ret_code := RET_FAIL;
+      p_ret_info := NULL;
+
+      IF p_outfile_id IS NULL
+         OR p_outfile_id <= 0
+         OR p_outfile_id <> TRUNC(p_outfile_id)
+      THEN
+         p_ret_info :=
+            'MI_0606_SEND_DOCUMENT_INVALID_OUTFILE_ID: '
+            || 'p_outfile_id must be a positive integer';
+         RETURN;
+      END IF;
+
+      l_parameters :=
+            '{"outfile_id":'
+         || TO_CHAR(
+               p_outfile_id,
+               'TM9',
+               'NLS_NUMERIC_CHARACTERS=''.,'''
+            )
+         || '}';
+
+      MI_mbus.send_Command(
+         p_result     => l_result,
+         p_inf_id     => cInfId,
+         p_action     => 'send_document',
+         p_req_id     => NULL,
+         p_parameters => l_parameters
+      );
+
+      l_result_req_id := MI_ResultCtx.result_Number(l_result, 'req_id');
+
+      IF l_result_req_id IS NOT NULL
+         AND l_result_req_id > 0
+         AND l_result_req_id = TRUNC(l_result_req_id)
+      THEN
+         p_req_id := l_result_req_id;
+      END IF;
+
+      MI_ResultCtx.export_Jdbc_Result(
+         p_result       => l_result,
+         p_success_code => RET_OK,
+         p_failure_code => RET_FAIL,
+         p_ret_code     => p_ret_code,
+         p_ret_info     => p_ret_info
+      );
+
+      IF l_result.parameters.EXISTS('delivery_outcome') THEN
+         l_delivery_outcome :=
+            l_result.parameters('delivery_outcome');
+
+         p_ret_info :=
+            SUBSTR(
+                  p_ret_info
+               || '; delivery_outcome='
+               || NVL(l_delivery_outcome, '<NULL>'),
+               1,
+               4000
+            );
+
+         IF UPPER(TRIM(l_delivery_outcome)) = 'UNKNOWN' THEN
+            l_is_ambiguous := TRUE;
+         END IF;
+      END IF;
+
+      IF l_result.parameters.EXISTS('retry_safe') THEN
+         l_retry_safe := l_result.parameters('retry_safe');
+
+         p_ret_info :=
+            SUBSTR(
+                  p_ret_info
+               || '; retry_safe='
+               || NVL(l_retry_safe, '<NULL>'),
+               1,
+               4000
+            );
+
+         IF TRIM(l_retry_safe) = '0' THEN
+            l_is_ambiguous := TRUE;
+         END IF;
+      END IF;
+
+      IF p_req_id IS NOT NULL THEN
+         p_ret_info :=
+            SUBSTR(
+                  p_ret_info
+               || '; req_id='
+               || TO_CHAR(p_req_id, 'TM9'),
+               1,
+               4000
+            );
+      END IF;
+
+      IF l_result.parameters.EXISTS('status_cd') THEN
+         p_ret_info :=
+            SUBSTR(
+                  p_ret_info
+               || '; status_cd='
+               || NVL(l_result.parameters('status_cd'), '<NULL>'),
+               1,
+               4000
+            );
+      END IF;
+
+      IF l_is_ambiguous THEN
+         p_ret_code := RET_FAIL;
+
+      ELSIF l_result.result_code = 'SEND_PUBLISHED'
+         AND MI_ResultCtx.is_Success(l_result)
+         AND p_req_id IS NOT NULL
+      THEN
+         p_ret_code := RET_OK;
+
+      ELSIF l_result.result_code = 'ALREADY_REGISTERED'
+         AND p_req_id IS NOT NULL
+      THEN
+         p_ret_code := RET_EXISTS;
+
+      ELSE
+         p_ret_code := RET_FAIL;
+
+         IF l_result.result_code IN (
+               'SEND_PUBLISHED',
+               'ALREADY_REGISTERED'
+            )
+            AND p_req_id IS NULL
+         THEN
+            p_ret_info :=
+               SUBSTR(
+                     p_ret_info
+                  || '; contract_error=positive req_id is required',
+                  1,
+                  4000
+               );
+         END IF;
+      END IF;
+
+   EXCEPTION
+      WHEN OTHERS THEN
+         p_ret_code := RET_FAIL;
+         p_ret_info :=
+            SUBSTR(
+                  'MI_0606_SEND_DOCUMENT_FAILED: '
+               || SQLERRM,
+               1,
+               4000
+            );
+   END send_Document;
+
+
    /* Бросает именованную technical error через общий result context. */
    PROCEDURE raise_Technical_Error (
       p_code     IN VARCHAR2,
@@ -349,42 +536,6 @@ IS
 
 
 
-   /*
-      DCL.RollBack may return FALSE instead of raising an exception.
-      A caller may return RET_* only after a confirmed local rollback.
-   */
-   FUNCTION rollback_Savepoint (
-      p_name IN OUT DCL.T_Name
-   )
-      RETURN BOOLEAN
-   IS
-      l_name    DCL.T_Name;
-      l_result  BOOLEAN;
-   BEGIN
-      IF p_name IS NULL THEN
-         RETURN TRUE;
-      END IF;
-
-      l_name := p_name;
-      p_name := NULL;
-
-      l_result := DCL.RollBack(l_name);
-
-      RETURN l_result IS NOT NULL AND l_result;
-
-   EXCEPTION
-      WHEN OTHERS THEN
-         g_log.error(
-            p_message_text => 'DCL rollback failed',
-            p_action_code  => 'rollback',
-            p_details_text => TO_CLOB( 'savepoint=' || l_name || '; error=' || SQLERRM )
-         );
-
-         RETURN FALSE;
-         
-   END rollback_Savepoint;
-
-
    /* */
    PROCEDURE rollback_Or_Raise (
       p_name  IN OUT DCL.T_Name,
@@ -393,7 +544,11 @@ IS
    )
    IS
    BEGIN
-      IF NOT rollback_Savepoint(p_name) THEN
+      IF NOT MI_Transaction.rollback_Savepoint(
+                p_name => p_name,
+                p_log  => g_log
+             )
+      THEN
          raise_Technical_Error(
             p_code => p_code,
             p_info => p_info
@@ -1148,7 +1303,11 @@ IS
 
    EXCEPTION
       WHEN OTHERS THEN
-         l_rollback_ok := rollback_Savepoint(l_savepoint);
+         l_rollback_ok :=
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_savepoint,
+               p_log  => l_log
+            );
 
          l_log.error(
             p_message_text => 'apply_Document_Submitted failed',
@@ -1344,7 +1503,11 @@ IS
 
    EXCEPTION
       WHEN OTHERS THEN
-         l_rollback_ok := rollback_Savepoint(l_savepoint);
+         l_rollback_ok :=
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_savepoint,
+               p_log  => l_log
+            );
 
          l_log.error(
             p_message_text => 'apply_Document_Status failed',
@@ -1527,7 +1690,11 @@ IS
 
    EXCEPTION
       WHEN OTHERS THEN
-         l_rollback_ok := rollback_Savepoint(l_savepoint);
+         l_rollback_ok :=
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_savepoint,
+               p_log  => l_log
+            );
 
          l_log.error(
             p_message_text => 'apply_Fault failed',
@@ -2031,7 +2198,10 @@ IS
          l_sqlerrm := SQLERRM;
 
          l_rollback_ok :=
-            rollback_Savepoint(l_savepoint_name);
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_savepoint_name,
+               p_log  => g_log
+            );
 
 
          g_log.error(
@@ -2360,7 +2530,10 @@ IS
 
 
          l_rollback_ok :=
-            rollback_Savepoint(l_savepoint_name);
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_savepoint_name,
+               p_log  => l_log
+            );
 
 
          l_log.error(

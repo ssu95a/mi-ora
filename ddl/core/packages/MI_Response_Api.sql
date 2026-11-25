@@ -1,8 +1,7 @@
 CREATE OR REPLACE PACKAGE MI_Response_Api
 IS
 
-   VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.1.0} {18.11.2026} Sulimoff$';
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.1.1} {19.11.2026} Sulimoff$';
 
 
    /*
@@ -26,29 +25,29 @@ IS
    RET_FAIL CONSTANT PLS_INTEGER := -1;
    RET_OK   CONSTANT PLS_INTEGER :=  0;
 
-
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2;
 
-
+   /* */
    FUNCTION status_Name (
       p_status_cd IN Status_t
    )
       RETURN VARCHAR2;
 
-
+   /* */
    FUNCTION exists_Response (
       p_rsp_id IN MI_RSP.RSP_ID%TYPE
    )
       RETURN BOOLEAN;
 
-
+   /* */
    FUNCTION get_Status (
       p_rsp_id IN MI_RSP.RSP_ID%TYPE
    )
       RETURN Status_t;
 
-
+   /* */
    FUNCTION get_Rsp_Uuid (
       p_rsp_id IN MI_RSP.RSP_ID%TYPE
    )
@@ -105,14 +104,14 @@ IS
 
 END MI_Response_Api;
 /
-
 CREATE OR REPLACE PACKAGE BODY MI_Response_Api
 IS
 
+   /* */
    cLogger CONSTANT VARCHAR2(64) := 'mi.response';
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2
    IS
@@ -121,7 +120,7 @@ IS
    END get_Version;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION status_Name (
       p_status_cd IN Status_t
    )
@@ -139,7 +138,7 @@ IS
    END status_Name;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION exists_Response (
       p_rsp_id IN MI_RSP.RSP_ID%TYPE
    )
@@ -160,7 +159,7 @@ IS
    END exists_Response;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Status (
       p_rsp_id IN MI_RSP.RSP_ID%TYPE
    )
@@ -177,7 +176,7 @@ IS
    END get_Status;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Rsp_Uuid (
       p_rsp_id IN MI_RSP.RSP_ID%TYPE
    )
@@ -194,7 +193,7 @@ IS
    END get_Rsp_Uuid;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION success_Result (
       p_code       IN VARCHAR2,
       p_info       IN VARCHAR2,
@@ -202,17 +201,13 @@ IS
       p_req_id     IN MI_RSP.REQ_ID%TYPE    DEFAULT NULL,
       p_itm_id     IN MI_RSP.ITM_ID%TYPE    DEFAULT NULL,
       p_rsp_uuid   IN MI_RSP.RSP_UUID%TYPE  DEFAULT NULL,
-      p_status_cd  IN Status_t               DEFAULT NULL
+      p_status_cd  IN Status_t              DEFAULT NULL
    )
       RETURN MI_ResultCtx.exec_Result_t
    IS
       l_result MI_ResultCtx.exec_Result_t;
    BEGIN
-      l_result :=
-         MI_ResultCtx.success(
-            p_code => p_code,
-            p_info => p_info
-         );
+      l_result := MI_ResultCtx.success( p_code => p_code, p_info => p_info );
 
       IF p_rsp_id IS NOT NULL THEN
          l_result.parameters('rsp_id') := TO_CHAR(p_rsp_id);
@@ -235,10 +230,11 @@ IS
       END IF;
 
       RETURN l_result;
+      
    END success_Result;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION failure_Result (
       p_code       IN VARCHAR2,
       p_info       IN VARCHAR2,
@@ -252,12 +248,7 @@ IS
    IS
       l_result MI_ResultCtx.exec_Result_t;
    BEGIN
-      l_result :=
-         MI_ResultCtx.failure(
-            p_code    => p_code,
-            p_info    => p_info,
-            p_details => p_details
-         );
+      l_result := MI_ResultCtx.failure( p_code => p_code, p_info => p_info, p_details => p_details );
 
       IF p_rsp_id IS NOT NULL THEN
          l_result.parameters('rsp_id') := TO_CHAR(p_rsp_id);
@@ -276,56 +267,11 @@ IS
       END IF;
 
       RETURN l_result;
+      
    END failure_Result;
 
 
-   ---------------------------------------------------------------------------
-   PROCEDURE export_Jdbc_Result (
-      p_result    IN  MI_ResultCtx.exec_Result_t,
-      p_ret_code  OUT NUMBER,
-      p_ret_info  OUT VARCHAR2
-   )
-   IS
-   BEGIN
-      p_ret_code := NULL;
-
-      BEGIN
-         p_ret_code := TO_NUMBER(p_result.parameters('ret_code'));
-      EXCEPTION
-         WHEN NO_DATA_FOUND OR VALUE_ERROR THEN
-            p_ret_code := NULL;
-      END;
-
-      IF p_ret_code IS NULL THEN
-         IF MI_ResultCtx.is_Success(p_result) THEN
-            p_ret_code := RET_OK;
-         ELSE
-            p_ret_code := RET_FAIL;
-         END IF;
-      END IF;
-
-      p_ret_info :=
-         SUBSTR(
-               NVL(p_result.result_code, '<NO_RESULT_CODE>')
-            || ': '
-            || NVL(p_result.result_info, '<NO_RESULT_INFO>')
-            || CASE
-                  WHEN p_result.cause_code IS NOT NULL
-                     OR p_result.cause_info IS NOT NULL
-                  THEN
-                        '; cause='
-                     || NVL(p_result.cause_code, '<NO_CAUSE_CODE>')
-                     || ': '
-                     || NVL(p_result.cause_info, '<NO_CAUSE_INFO>')
-                  ELSE NULL
-               END,
-            1,
-            4000
-         );
-   END export_Jdbc_Result;
-
-
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION current_State_Failure (
       p_rsp_id     IN MI_RSP.RSP_ID%TYPE,
       p_operation  IN VARCHAR2,
@@ -349,15 +295,7 @@ IS
       RETURN
          failure_Result(
             p_code      => 'RESPONSE_BAD_STATUS',
-            p_info      =>
-               p_operation
-               || ': недопустимый статус '
-               || status_Name(l_status_cd)
-               || ' ('
-               || l_status_cd
-               || '), ожидается '
-               || p_expected,
-            p_rsp_id    => p_rsp_id,
+            p_info      => p_operation || ': недопустимый статус ' || status_Name(l_status_cd) || ' (' || l_status_cd || '), ожидается ' || p_expected, p_rsp_id => p_rsp_id,
             p_req_id    => l_req_id,
             p_itm_id    => l_itm_id,
             p_status_cd => l_status_cd
@@ -374,7 +312,7 @@ IS
    END current_State_Failure;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION create_Response (
       p_req_id       IN MI_RSP.REQ_ID%TYPE,
       p_itm_id       IN MI_RSP.ITM_ID%TYPE,
@@ -524,10 +462,11 @@ IS
          END IF;
 
          RETURN l_result;
+         
    END create_Response;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION to_Ready (
       p_rsp_id IN MI_RSP.RSP_ID%TYPE
    )
@@ -612,7 +551,7 @@ IS
    END to_Ready;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION to_Sent (
       p_rsp_id IN MI_RSP.RSP_ID%TYPE
    )
@@ -624,14 +563,10 @@ IS
       l_sqlcode   PLS_INTEGER;
       l_sqlerrm   VARCHAR2(2000);
    BEGIN
+   
       IF p_rsp_id IS NULL THEN
-         RETURN
-            failure_Result(
-               p_code => 'RESPONSE_INVALID_RSP_ID',
-               p_info => 'p_rsp_id must not be NULL'
-            );
+         RETURN failure_Result( p_code => 'RESPONSE_INVALID_RSP_ID', p_info => 'p_rsp_id must not be NULL' );
       END IF;
-
 
       UPDATE MI_RSP
          SET STATUS_CD = STATUS_SENT,
@@ -698,7 +633,7 @@ IS
    END to_Sent;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE to_Sent (
       p_rsp_id     IN  MI_RSP.RSP_ID%TYPE,
       p_ret_code   OUT NUMBER,
@@ -709,10 +644,12 @@ IS
    BEGIN
       l_result := to_Sent(p_rsp_id => p_rsp_id);
 
-      export_Jdbc_Result(
-         p_result   => l_result,
-         p_ret_code => p_ret_code,
-         p_ret_info => p_ret_info
+      MI_ResultCtx.export_Jdbc_Result(
+         p_result        => l_result,
+         p_success_code  => RET_OK,
+         p_failure_code  => RET_FAIL,
+         p_ret_code      => p_ret_code,
+         p_ret_info      => p_ret_info
       );
    END to_Sent;
 

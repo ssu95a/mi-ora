@@ -1,13 +1,13 @@
 CREATE OR REPLACE PACKAGE MI_Utils
 IS
 
-  VERSION CONSTANT VARCHAR2(100) := '$Id: {1.2.0} {09.11.2026} Sulimoff$';
+   /** */
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.2.0} {09.11.2026} Sulimoff$';
 
 
    -- Набор - map, именованных параметров.
    -- Значения хранятся в строковом представлении.
-   TYPE ParameterList_t IS TABLE OF VARCHAR2(2000)
-        INDEX BY VARCHAR2(100);
+   TYPE ParameterList_t IS TABLE OF VARCHAR2(2000) INDEX BY VARCHAR2(100);
 
 
    -- Расширенное представление атрибута.

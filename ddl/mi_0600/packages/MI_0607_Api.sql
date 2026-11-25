@@ -1,10 +1,10 @@
 CREATE OR REPLACE PACKAGE MI_0607_Api
 IS
 
-   /* MI-edo. DOCUMENT_RECEIVED вида сведений 607 */
+   /* MI-edo. DOCUMENT_RECEIVED видов сведений 607 и 608 */
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.2.1} {16.11.2026} Sulimoff$';
+      '$Id: {1.5.0} {25.11.2026} Sulimoff$';
 
 
    RET_FAIL               CONSTANT PLS_INTEGER := -1;
@@ -14,11 +14,7 @@ IS
    RET_DOC_TYPE_MISMATCH  CONSTANT PLS_INTEGER :=  2;
    RET_PARSING_FAILED     CONSTANT PLS_INTEGER :=  3;
 
-   /*
-      Идемпотентный повтор успешно завершённого DOCUMENT_RECEIVED.
-      Повтор с сохранённым business failure возвращает исходный RET_*.
-      Неполный или противоречивый journal является technical failure.
-   */
+   /* Legacy ABI constant. DOCUMENT_RECEIVED duplicates return RET_FAIL. */
    RET_EXISTS             CONSTANT PLS_INTEGER :=  4;
 
 
@@ -45,8 +41,11 @@ IS
 
       При unexpected exception откатывается вся работа этой процедуры.
 
-      При успешном RD_PKG.Parsing параметр p_parse_result содержит
-      RSD_OUTFILES.ID созданного исходящего документа.
+      ORIGINAL_REQ_UUID содержит requestId входящего документа и является
+      ключом регистрации. Повторный requestId возвращает RET_FAIL; ранее
+      созданные journal и business-данные не изменяются.
+
+      p_parse_result возвращает фактический результат RD_PKG.Parsing.
 
       COMMIT процедура не выполняет.
    */
@@ -73,13 +72,68 @@ IS
       p_ret_info          OUT VARCHAR2
    );
 
+   /* Общая обработка входящих ВС 607 и 608. */
+   PROCEDURE process_Document_Received (
+      p_original_req_uuid IN  MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_message_uuid      IN  MI_REQ.MESSAGE_UUID%TYPE,
+      p_correlation_id    IN  MI_REQ.CORRELATION_ID%TYPE,
+
+      p_task_id           IN  RSD_BASES.TASKID%TYPE,
+      p_doc_type          IN  RSD_BASES.FILE_TYPE%TYPE,
+      p_doc_date          IN  RSD_BASES.DOCDATE%TYPE,
+
+      p_file_name         IN  RSD_BASES.FILE_NAME%TYPE,
+      p_file_body         IN  MI_0600.BZIP_DATA%TYPE,
+
+      p_req_id            OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id            OUT MI_0600.ITM_ID%TYPE,
+
+      p_base_id           OUT RSD_BASES.ID%TYPE,
+      p_file_type         OUT RSD_BASES.FILE_TYPE%TYPE,
+      p_parse_result      OUT NUMBER,
+
+      p_ret_code          OUT NUMBER,
+      p_ret_info          OUT VARCHAR2,
+      p_inf_id            IN  MI_REQ.INF_ID%TYPE
+   );
+
+   /*
+      Дополнительно возвращает ID исходящего PB2 для созданной записи RSD_BASES.
+      При отсутствии PB2, нескольких PB2 или ошибке приёма возвращает NULL.
+   */
+   PROCEDURE process_Document_Received (
+      p_original_req_uuid IN  MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_message_uuid      IN  MI_REQ.MESSAGE_UUID%TYPE,
+      p_correlation_id    IN  MI_REQ.CORRELATION_ID%TYPE,
+
+      p_task_id           IN  RSD_BASES.TASKID%TYPE,
+      p_doc_type          IN  RSD_BASES.FILE_TYPE%TYPE,
+      p_doc_date          IN  RSD_BASES.DOCDATE%TYPE,
+
+      p_file_name         IN  RSD_BASES.FILE_NAME%TYPE,
+      p_file_body         IN  MI_0600.BZIP_DATA%TYPE,
+
+      p_req_id            OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id            OUT MI_0600.ITM_ID%TYPE,
+
+      p_base_id           OUT RSD_BASES.ID%TYPE,
+      p_file_type         OUT RSD_BASES.FILE_TYPE%TYPE,
+      p_parse_result      OUT NUMBER,
+
+      p_ret_code          OUT NUMBER,
+      p_ret_info          OUT VARCHAR2,
+      p_inf_id            IN  MI_REQ.INF_ID%TYPE,
+      p_outfile_id        OUT RSD_OUTFILES.ID%TYPE
+   );
+
 END MI_0607_Api;
 /
 CREATE OR REPLACE PACKAGE BODY MI_0607_Api
 IS
 
    cLogger CONSTANT VARCHAR2(64)        := 'mi.0607';
-   cInfId  CONSTANT MI_REQ.INF_ID%TYPE := 607;
+   cInf607 CONSTANT MI_REQ.INF_ID%TYPE := 607;
+   cInf608 CONSTANT MI_REQ.INF_ID%TYPE := 608;
 
    /* глобальный логгер */
    g_log CONSTANT MI_Logger_T :=
@@ -115,7 +169,8 @@ IS
 
    /* */
    FUNCTION journal_Name (
-      p_message_uuid IN MI_REQ.MESSAGE_UUID%TYPE
+      p_inf_id            IN MI_REQ.INF_ID%TYPE,
+      p_original_req_uuid IN MI_REQ.ORIGINAL_REQ_UUID%TYPE
    )
       RETURN MI_0600.CZIP_NAME%TYPE
    IS
@@ -123,11 +178,11 @@ IS
       /*
          MI_0600.CZIP_NAME имеет глобальный UNIQUE constraint.
 
-         Для 607 это не имя ZIP, а технический ключ входящего сообщения.
-         Исходное имя документа хранится в MI_0600_F.
+         Это технический ключ requestId входящего
+         документа. Исходное имя документа хранится в MI_0600_F.
       */
-      RETURN 'MI_0607_' || LOWER(TRIM(p_message_uuid));
-      
+      RETURN CASE p_inf_id WHEN cInf608 THEN 'MI_0608_' ELSE 'MI_0607_' END
+             || LOWER(TRIM(p_original_req_uuid));
    END journal_Name;
 
 
@@ -161,271 +216,27 @@ IS
    END set_Item_Result;
 
 
-   /* NULL-safe UUID comparison for replay identity checks. */
-   FUNCTION same_Uuid (
-      p_left  IN VARCHAR2,
-      p_right IN VARCHAR2
+   /* Проверяет регистрацию requestId входящего DOCUMENT_RECEIVED. */
+   FUNCTION duplicate_Request_Exists (
+      p_inf_id            IN MI_REQ.INF_ID%TYPE,
+      p_original_req_uuid IN MI_REQ.ORIGINAL_REQ_UUID%TYPE
    )
       RETURN BOOLEAN
    IS
+      l_request_count PLS_INTEGER;
    BEGIN
-      IF p_left IS NULL THEN
-         RETURN p_right IS NULL;
-      END IF;
-
-      IF p_right IS NULL THEN
-         RETURN FALSE;
-      END IF;
-
-      RETURN LOWER(TRIM(p_left)) = LOWER(TRIM(p_right));
-   END same_Uuid;
-
-
-   /* Maps a terminal journal to the public Java-facing return contract. */
-   FUNCTION replay_Return_Code (
-      p_ires_code  IN MI_0600.IRES_CODE%TYPE,
-      p_error_code IN MI_0600.ERROR_CODE%TYPE
-   )
-      RETURN PLS_INTEGER
-   IS
-   BEGIN
-      IF p_ires_code = MI_Item_Result_Api.RESPONSE_OK THEN
-         RETURN RET_EXISTS;
-      END IF;
-
-      IF p_ires_code = MI_Item_Result_Api.RESPONSE_FAIL THEN
-         CASE UPPER(TRIM(p_error_code))
-            WHEN 'CREATE_BASE_FAILED' THEN
-               RETURN RET_CREATE_BASE_FAILED;
-            WHEN 'DOC_TYPE_MISMATCH' THEN
-               RETURN RET_DOC_TYPE_MISMATCH;
-            WHEN 'PARSING_FAILED' THEN
-               RETURN RET_PARSING_FAILED;
-            ELSE
-               raise_Technical_Error(
-                  p_code => 'MI_0607_INCONSISTENT_JOURNAL',
-                  p_info =>
-                        'Unknown terminal DOCUMENT_RECEIVED error_code='
-                     || NVL(p_error_code, '<NULL>')
-               );
-         END CASE;
-      END IF;
-
-      raise_Technical_Error(
-         p_code => 'MI_0607_INCONSISTENT_JOURNAL',
-         p_info =>
-               'Unexpected terminal DOCUMENT_RECEIVED ires_code='
-            || NVL(TO_CHAR(p_ires_code), '<NULL>')
-      );
-
-      RETURN RET_FAIL;
-   END replay_Return_Code;
-
-
-   /* A completed journal with different input is not an idempotent replay. */
-   PROCEDURE raise_Replay_Conflict (
-      p_req_id IN MI_REQ.REQ_ID%TYPE,
-      p_itm_id IN MI_0600.ITM_ID%TYPE,
-      p_field  IN VARCHAR2
-   )
-   IS
-   BEGIN
-      raise_Technical_Error(
-         p_code => 'MI_0607_REPLAY_CONFLICT',
-         p_info =>
-               'DOCUMENT_RECEIVED replay differs from stored journal'
-            || '; field='
-            || p_field
-            || '; req_id='
-            || p_req_id
-            || '; itm_id='
-            || p_itm_id
-      );
-   END raise_Replay_Conflict;
-
-
-   /* */
-   FUNCTION find_Existing (
-      p_journal_name          IN  MI_0600.CZIP_NAME%TYPE,
-      p_task_id               IN  MI_REQ.CTAXREQ_ID%TYPE,
-      p_original_req_uuid     IN  MI_REQ.ORIGINAL_REQ_UUID%TYPE,
-      p_input_correlation_id  IN  MI_REQ.CORRELATION_ID%TYPE,
-      p_file_name             IN  MI_0600_F.CZIP_FILE_NAME%TYPE,
-      p_file_body             IN  MI_0600.BZIP_DATA%TYPE,
-
-      p_req_id                OUT MI_REQ.REQ_ID%TYPE,
-      p_itm_id                OUT MI_0600.ITM_ID%TYPE,
-      p_ires_code             OUT MI_0600.IRES_CODE%TYPE,
-      p_error_code            OUT MI_0600.ERROR_CODE%TYPE,
-      p_cres_info             OUT MI_0600.CRES_INFO%TYPE,
-      p_stored_correlation_id OUT MI_REQ.CORRELATION_ID%TYPE
-   )
-      RETURN BOOLEAN
-   IS
-      l_status_cd             MI_REQ.STATUS_CD%TYPE;
-      l_request_message_uuid  MI_REQ.MESSAGE_UUID%TYPE;
-      l_item_message_uuid     MI_0600.MESSAGE_UUID%TYPE;
-      l_stored_task_id        MI_REQ.CTAXREQ_ID%TYPE;
-      l_stored_original_uuid  MI_REQ.ORIGINAL_REQ_UUID%TYPE;
-      l_stored_file_name      MI_0600_F.CZIP_FILE_NAME%TYPE;
-      l_stored_file_body      MI_0600.BZIP_DATA%TYPE;
-      l_payload_size          MI_0600.IZIP_SIZE%TYPE;
-      l_file_count            PLS_INTEGER;
-      l_item_file_count       MI_0600.IZIP_FILES_COUNT%TYPE;
-      l_tres_time             MI_0600.TRES_TIME%TYPE;
-      l_payload_compare       PLS_INTEGER;
-   BEGIN
-      p_req_id                := NULL;
-      p_itm_id                := NULL;
-      p_ires_code             := NULL;
-      p_error_code            := NULL;
-      p_cres_info             := NULL;
-      p_stored_correlation_id := NULL;
-
-      SELECT r.REQ_ID,
-             i.ITM_ID,
-             i.IRES_CODE,
-             i.ERROR_CODE,
-             i.CRES_INFO,
-             r.CORRELATION_ID,
-             r.STATUS_CD,
-             r.MESSAGE_UUID,
-             i.MESSAGE_UUID,
-             r.CTAXREQ_ID,
-             r.ORIGINAL_REQ_UUID,
-             i.BZIP_DATA,
-             DBMS_LOB.getlength(i.BZIP_DATA),
-             i.IZIP_FILES_COUNT,
-             i.TRES_TIME
-        INTO p_req_id,
-             p_itm_id,
-             p_ires_code,
-             p_error_code,
-             p_cres_info,
-             p_stored_correlation_id,
-             l_status_cd,
-             l_request_message_uuid,
-             l_item_message_uuid,
-             l_stored_task_id,
-             l_stored_original_uuid,
-             l_stored_file_body,
-             l_payload_size,
-             l_item_file_count,
-             l_tres_time
+      SELECT COUNT(*)
+        INTO l_request_count
         FROM MI_REQ r
-        JOIN MI_0600 i
-          ON i.REQ_ID = r.REQ_ID
-       WHERE r.INF_ID = cInfId
-         AND i.CZIP_NAME = p_journal_name;
+       WHERE r.INF_ID = p_inf_id
+         AND LOWER(TRIM(r.ORIGINAL_REQ_UUID)) = p_original_req_uuid;
 
-      SELECT COUNT(*),
-             MIN(CZIP_FILE_NAME)
-        INTO l_file_count,
-             l_stored_file_name
-        FROM MI_0600_F
-       WHERE ITM_ID = p_itm_id;
-
-
-      /*
-         A visible replay journal must represent a completed atomic call.
-         Returning RET_EXISTS for an incomplete journal would hide a broken
-         caller transaction or manually corrupted integration data.
-      */
-      IF l_status_cd IS NULL
-         OR l_status_cd <> MI_Request_Api.STATUS_DONE
-         OR l_request_message_uuid IS NULL
-         OR l_item_message_uuid IS NULL
-         OR LOWER(TRIM(l_request_message_uuid)) <>
-               LOWER(TRIM(l_item_message_uuid))
-         OR p_journal_name <>
-               journal_Name(l_request_message_uuid)
-         OR NVL(l_payload_size, 0) <= 0
-         OR l_item_file_count IS NULL
-         OR l_item_file_count <> 1
-         OR l_file_count <> 1
-         OR l_tres_time IS NULL
-         OR p_ires_code IS NULL
-         OR p_ires_code NOT IN (
-               MI_Item_Result_Api.RESPONSE_OK,
-               MI_Item_Result_Api.RESPONSE_FAIL
-            )
-         OR (
-               p_ires_code = MI_Item_Result_Api.RESPONSE_OK
-               AND p_error_code IS NOT NULL
-            )
-         OR (
-               p_ires_code = MI_Item_Result_Api.RESPONSE_FAIL
-               AND p_error_code IS NULL
-            )
-      THEN
-         raise_Technical_Error(
-            p_code => 'MI_0607_INCOMPLETE_JOURNAL',
-            p_info =>
-                  'Incomplete DOCUMENT_RECEIVED journal'
-               || '; req_id='
-               || p_req_id
-               || '; itm_id='
-               || p_itm_id
-         );
-      END IF;
-
-
-      /*
-         message_uuid is the idempotency key, not permission to accept a
-         different message under the same key.  A NULL input correlation_id
-         is intentionally compatible with the generated stored value.
-      */
-      IF NOT same_Uuid(l_stored_task_id, p_task_id) THEN
-         raise_Replay_Conflict(p_req_id, p_itm_id, 'taskId');
-      END IF;
-
-      IF NOT same_Uuid(l_stored_original_uuid, p_original_req_uuid) THEN
-         raise_Replay_Conflict(
-            p_req_id,
-            p_itm_id,
-            'originalRequestUuid'
-         );
-      END IF;
-
-      IF p_input_correlation_id IS NOT NULL
-         AND NOT same_Uuid(
-                    p_stored_correlation_id,
-                    p_input_correlation_id
-                 )
-      THEN
-         raise_Replay_Conflict(p_req_id, p_itm_id, 'correlationId');
-      END IF;
-
-      IF l_stored_file_name IS NULL
-         OR l_stored_file_name <> p_file_name
-      THEN
-         raise_Replay_Conflict(p_req_id, p_itm_id, 'fileName');
-      END IF;
-
-      l_payload_compare := DBMS_LOB.compare(l_stored_file_body, p_file_body);
-
-      IF l_payload_compare IS NULL OR l_payload_compare <> 0 THEN
-         raise_Replay_Conflict(p_req_id, p_itm_id, 'fileBody');
-      END IF;
-
-
-      RETURN TRUE;
-
-   EXCEPTION
-      WHEN NO_DATA_FOUND THEN
-         p_req_id                := NULL;
-         p_itm_id                := NULL;
-         p_ires_code             := NULL;
-         p_error_code            := NULL;
-         p_cres_info             := NULL;
-         p_stored_correlation_id := NULL;
-
-         RETURN FALSE;
-   END find_Existing;
+      RETURN l_request_count > 0;
+   END duplicate_Request_Exists;
 
 
    /* */
-   PROCEDURE process_Document_Received (
+   PROCEDURE process_Document_Received_Impl (
       p_original_req_uuid IN  MI_REQ.ORIGINAL_REQ_UUID%TYPE,
       p_message_uuid      IN  MI_REQ.MESSAGE_UUID%TYPE,
       p_correlation_id    IN  MI_REQ.CORRELATION_ID%TYPE,
@@ -445,7 +256,10 @@ IS
       p_parse_result      OUT NUMBER,
 
       p_ret_code          OUT NUMBER,
-      p_ret_info          OUT VARCHAR2
+      p_ret_info          OUT VARCHAR2,
+      p_inf_id            IN  MI_REQ.INF_ID%TYPE,
+      p_outfile_id        OUT RSD_OUTFILES.ID%TYPE,
+      p_resolve_outfile   IN  BOOLEAN
    )
    IS
       l_doc_type            RSD_BASES.FILE_TYPE%TYPE;
@@ -468,13 +282,11 @@ IS
 
       l_base_id             RSD_BASES.ID%TYPE;
       l_file_type           RSD_BASES.FILE_TYPE%TYPE;
-      l_parse_result        RSD_OUTFILES.ID%TYPE;
+      l_parse_result        NUMBER;
+      l_outfile_id          RSD_OUTFILES.ID%TYPE;
+      l_candidate_count     NUMBER;
 
       l_err                 VARCHAR2(32767);
-
-      l_existing_ires       MI_0600.IRES_CODE%TYPE;
-      l_existing_error      MI_0600.ERROR_CODE%TYPE;
-      l_existing_info       MI_0600.CRES_INFO%TYPE;
 
       l_own_savepoint       DCL.T_Name;
       l_business_savepoint  DCL.T_Name;
@@ -485,104 +297,42 @@ IS
       l_log                 MI_Logger_T := g_log;
 
 
-      FUNCTION rollback_Savepoint (
-         p_name IN OUT DCL.T_Name
-      )
-         RETURN BOOLEAN
-      IS
-         l_name    DCL.T_Name;
-         l_result  BOOLEAN;
-      BEGIN
-         IF p_name IS NULL THEN
-            RETURN TRUE;
-         END IF;
-
-         l_name := p_name;
-         p_name := NULL;
-
-         l_result := DCL.RollBack(l_name);
-
-         RETURN l_result IS NOT NULL AND l_result;
-
-      EXCEPTION
-         WHEN OTHERS THEN
-            l_log.error(
-               p_message_text => 'DCL rollback failed',
-               p_action_code  => 'rollback',
-               p_details_text =>
-                  TO_CLOB(
-                        'savepoint='
-                     || l_name
-                     || '; error='
-                     || SQLERRM
-                  )
-            );
-
-            RETURN FALSE;
-      END rollback_Savepoint;
-
-
-      PROCEDURE return_Existing
+      PROCEDURE return_Duplicate_Request
       IS
       BEGIN
-         p_req_id       := l_req_id;
-         p_itm_id       := l_itm_id;
+         p_req_id       := NULL;
+         p_itm_id       := NULL;
          p_base_id      := NULL;
          p_file_type    := NULL;
          p_parse_result := NULL;
 
-         p_ret_code :=
-            replay_Return_Code(
-               p_ires_code  => l_existing_ires,
-               p_error_code => l_existing_error
+         p_ret_code := RET_FAIL;
+         p_ret_info :=
+            SUBSTR(
+                  'MI_0607_DUPLICATE_REQUEST: '
+               || 'DOCUMENT_RECEIVED requestId already registered'
+               || '; requestId='
+               || l_original_req_uuid,
+               1,
+               4000
             );
-
-         IF p_ret_code = RET_EXISTS THEN
-            p_ret_info :=
-               SUBSTR(
-                     'DOCUMENT_RECEIVED already processed'
-                  || '; req_id='
-                  || l_req_id
-                  || '; itm_id='
-                  || l_itm_id,
-                  1,
-                  4000
-               );
-         ELSE
-            p_ret_info :=
-               NVL(
-                  DBMS_LOB.substr(l_existing_info, 4000, 1),
-                  l_existing_error
-               );
-         END IF;
 
          l_log.context(
-            p_inf_id         => cInfId,
-            p_req_id         => l_req_id,
-            p_itm_id         => l_itm_id,
-            p_correlation_id => l_correlation_id
+            p_inf_id         => p_inf_id,
+            p_correlation_id => l_input_correlation
          );
 
-         IF p_ret_code = RET_EXISTS THEN
-            l_log.info(
-               p_message_text => 'DOCUMENT_RECEIVED replay detected',
-               p_action_code  => 'already_processed',
-               p_details_text => TO_CLOB(p_ret_info)
-            );
-         ELSE
-            l_log.warn(
-               p_message_text =>
-                  'DOCUMENT_RECEIVED failed replay detected',
-               p_action_code  => 'already_failed',
-               p_details_text => TO_CLOB(p_ret_info)
-            );
-         END IF;
+         l_log.warn(
+            p_message_text => 'Duplicate DOCUMENT_RECEIVED rejected',
+            p_action_code  => 'duplicate_request',
+            p_details_text => TO_CLOB(p_ret_info)
+         );
 
          l_log.exit_f(
             p_function_name => 'process_Document_Received',
-            p_message_text  => NVL(l_existing_error, 'RET_EXISTS')
+            p_message_text  => 'MI_0607_DUPLICATE_REQUEST'
          );
-      END return_Existing;
+      END return_Duplicate_Request;
 
 
       PROCEDURE return_Business_Failure (
@@ -594,7 +344,11 @@ IS
       )
       IS
       BEGIN
-         IF NOT rollback_Savepoint(l_business_savepoint) THEN
+         IF NOT MI_Transaction.rollback_Savepoint(
+                   p_name => l_business_savepoint,
+                   p_log  => l_log
+                )
+         THEN
             raise_Technical_Error(
                p_code => 'MI_0607_BUSINESS_ROLLBACK_FAILED',
                p_info =>
@@ -640,13 +394,18 @@ IS
       p_base_id      := NULL;
       p_file_type    := NULL;
       p_parse_result := NULL;
+      p_outfile_id   := NULL;
 
       p_ret_code     := RET_FAIL;
       p_ret_info     := NULL;
 
+      IF p_inf_id IS NULL OR p_inf_id NOT IN (cInf607, cInf608) THEN
+         p_ret_info := 'MI_0607_INVALID_INF_ID: expected 607 or 608';
+         RETURN;
+      END IF;
 
       l_message_uuid      := TRIM(p_message_uuid);
-      l_original_req_uuid := TRIM(p_original_req_uuid);
+      l_original_req_uuid := LOWER(TRIM(p_original_req_uuid));
       l_input_correlation := TRIM(p_correlation_id);
       l_task_id           := TRIM(p_task_id);
       l_doc_type          := UPPER(TRIM(p_doc_type));
@@ -654,7 +413,7 @@ IS
 
 
       l_log.context(
-         p_inf_id         => cInfId,
+         p_inf_id         => p_inf_id,
          p_correlation_id => l_input_correlation
       );
 
@@ -679,8 +438,8 @@ IS
       END IF;
 
 
-      IF l_original_req_uuid IS NOT NULL
-         AND NOT MI_Utils.is_Uuid(l_original_req_uuid)
+      IF l_original_req_uuid IS NULL
+         OR NOT MI_Utils.is_Uuid(l_original_req_uuid)
       THEN
          raise_Technical_Error(
             p_code => 'MI_0607_INVALID_ORIGINAL_UUID',
@@ -753,24 +512,10 @@ IS
          );
       END IF;
 
-      l_journal_name := journal_Name(l_message_uuid);
+      l_journal_name := journal_Name(p_inf_id, l_original_req_uuid);
 
-      IF find_Existing(
-            p_journal_name          => l_journal_name,
-            p_task_id               => l_task_id,
-            p_original_req_uuid     => l_original_req_uuid,
-            p_input_correlation_id  => l_input_correlation,
-            p_file_name             => l_file_name,
-            p_file_body             => p_file_body,
-            p_req_id                => l_req_id,
-            p_itm_id                => l_itm_id,
-            p_ires_code             => l_existing_ires,
-            p_error_code            => l_existing_error,
-            p_cres_info             => l_existing_info,
-            p_stored_correlation_id => l_correlation_id
-         )
-      THEN
-         return_Existing;
+      IF duplicate_Request_Exists(p_inf_id, l_original_req_uuid) THEN
+         return_Duplicate_Request;
          RETURN;
       END IF;
 
@@ -780,7 +525,7 @@ IS
       -- 1. MI_REQ: durable integration journal header.
       l_request_result :=
          MI_Request_Api.create_Request(
-            p_inf_id            => cInfId,
+            p_inf_id            => p_inf_id,
             p_correlation_id    => l_input_correlation,
             p_original_req_uuid => l_original_req_uuid,
             p_ctaxreq_id        => l_task_id,
@@ -795,15 +540,12 @@ IS
 
 
       IF MI_ResultCtx.is_Failed(l_request_result) THEN
-         /*
-            MI_Request_Api converts INSERT failures to MI_ResultCtx. If
-            MI_REQ.MESSAGE_UUID is protected by a UNIQUE key, a concurrent
-            replay is therefore not visible here as DUP_VAL_ON_INDEX.
-
-            Roll back our attempt and recheck the durable 607 journal before
-            classifying the result as a technical request-header failure.
-         */
-         l_rollback_ok := rollback_Savepoint(l_own_savepoint);
+         /* MI_Request_Api converts INSERT failures to MI_ResultCtx. */
+         l_rollback_ok :=
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_own_savepoint,
+               p_log  => l_log
+            );
          l_business_savepoint := NULL;
 
          IF NOT l_rollback_ok THEN
@@ -815,22 +557,8 @@ IS
          END IF;
 
 
-         IF find_Existing(
-               p_journal_name          => l_journal_name,
-               p_task_id               => l_task_id,
-               p_original_req_uuid     => l_original_req_uuid,
-               p_input_correlation_id  => l_input_correlation,
-               p_file_name             => l_file_name,
-               p_file_body             => p_file_body,
-               p_req_id                => l_req_id,
-               p_itm_id                => l_itm_id,
-               p_ires_code             => l_existing_ires,
-               p_error_code            => l_existing_error,
-               p_cres_info             => l_existing_info,
-               p_stored_correlation_id => l_correlation_id
-            )
-         THEN
-            return_Existing;
+         IF duplicate_Request_Exists(p_inf_id, l_original_req_uuid) THEN
+            return_Duplicate_Request;
             RETURN;
          END IF;
 
@@ -915,7 +643,7 @@ IS
 
 
       l_log.context(
-         p_inf_id         => cInfId,
+         p_inf_id         => p_inf_id,
          p_req_id         => l_req_id,
          p_itm_id         => l_itm_id,
          p_correlation_id => l_correlation_id
@@ -1007,7 +735,7 @@ IS
       END IF;
 
 
-      -- 6. Run RSD business processing; result is created RSD_OUTFILES.ID.
+      -- 6. Обработка входящего документа в RD_PKG.
       l_err          := NULL;
       l_parse_result := NULL;
 
@@ -1035,6 +763,27 @@ IS
       END IF;
 
 
+      IF p_resolve_outfile THEN
+         SELECT COUNT(*), MIN(o.ID)
+           INTO l_candidate_count, l_outfile_id
+           FROM RSD_OUTFILES o
+          WHERE o.PID = l_base_id
+            AND o.FILE_TYPE = 'PB2';
+
+         IF l_candidate_count > 1 THEN
+            l_outfile_id := NULL;
+            l_log.warn(
+               p_message_text => 'Найдено несколько исходящих PB2 для DOCUMENT_RECEIVED',
+               p_action_code  => 'multiple_pb2_outfiles',
+               p_details_text => TO_CLOB(
+                     'base_id=' || l_base_id
+                  || ', candidate_count=' || l_candidate_count
+               )
+            );
+         END IF;
+      END IF;
+
+
       -- 7. Successful business result.
       set_Item_Result(
          p_itm_id     => l_itm_id,
@@ -1052,6 +801,7 @@ IS
       p_base_id      := l_base_id;
       p_file_type    := l_file_type;
       p_parse_result := l_parse_result;
+      p_outfile_id   := l_outfile_id;
 
       p_ret_code := RET_OK;
 
@@ -1079,16 +829,20 @@ IS
 
    EXCEPTION
       ------------------------------------------------------------------------
-      -- Concurrent replay.
+      -- Concurrent duplicate requestId.
       --
-      -- CZIP_NAME is protected by global UNIQUE constraint. If another
-      -- transaction created this message concurrently, rollback our own
-      -- header/item and return the committed existing journal.
+      -- CZIP_NAME is derived from ORIGINAL_REQ_UUID and protected by a global
+      -- UNIQUE constraint. Roll back our own header/item before reporting the
+      -- duplicate through the JDBC return contract.
       ------------------------------------------------------------------------
       WHEN DUP_VAL_ON_INDEX THEN
       
          l_sqlerrm     := SQLERRM;
-         l_rollback_ok := rollback_Savepoint(l_own_savepoint);
+         l_rollback_ok :=
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_own_savepoint,
+               p_log  => l_log
+            );
          l_business_savepoint := NULL;
 
          IF NOT l_rollback_ok THEN
@@ -1100,27 +854,8 @@ IS
          END IF;
 
 
-         /*
-            Do not depend on the physical constraint/index name contained in
-            ORA-00001. After rollback, the durable journal is the source of
-            truth: if it appeared concurrently, this is a normal replay.
-         */
-         IF find_Existing(
-               p_journal_name          => l_journal_name,
-               p_task_id               => l_task_id,
-               p_original_req_uuid     => l_original_req_uuid,
-               p_input_correlation_id  => l_input_correlation,
-               p_file_name             => l_file_name,
-               p_file_body             => p_file_body,
-               p_req_id                => l_req_id,
-               p_itm_id                => l_itm_id,
-               p_ires_code             => l_existing_ires,
-               p_error_code            => l_existing_error,
-               p_cres_info             => l_existing_info,
-               p_stored_correlation_id => l_correlation_id
-            )
-         THEN
-            return_Existing;
+         IF duplicate_Request_Exists(p_inf_id, l_original_req_uuid) THEN
+            return_Duplicate_Request;
             RETURN;
          END IF;
 
@@ -1144,7 +879,11 @@ IS
       ------------------------------------------------------------------------
       WHEN OTHERS THEN
          l_sqlerrm     := SQLERRM;
-         l_rollback_ok := rollback_Savepoint(l_own_savepoint);
+         l_rollback_ok :=
+            MI_Transaction.rollback_Savepoint(
+               p_name => l_own_savepoint,
+               p_log  => l_log
+            );
          l_business_savepoint := NULL;
 
          l_log.error(
@@ -1162,8 +901,150 @@ IS
          );
 
          RAISE;
+   END process_Document_Received_Impl;
+
+
+   PROCEDURE process_Document_Received (
+      p_original_req_uuid IN  MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_message_uuid      IN  MI_REQ.MESSAGE_UUID%TYPE,
+      p_correlation_id    IN  MI_REQ.CORRELATION_ID%TYPE,
+
+      p_task_id           IN  RSD_BASES.TASKID%TYPE,
+      p_doc_type          IN  RSD_BASES.FILE_TYPE%TYPE,
+      p_doc_date          IN  RSD_BASES.DOCDATE%TYPE,
+
+      p_file_name         IN  RSD_BASES.FILE_NAME%TYPE,
+      p_file_body         IN  MI_0600.BZIP_DATA%TYPE,
+
+      p_req_id            OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id            OUT MI_0600.ITM_ID%TYPE,
+
+      p_base_id           OUT RSD_BASES.ID%TYPE,
+      p_file_type         OUT RSD_BASES.FILE_TYPE%TYPE,
+      p_parse_result      OUT NUMBER,
+
+      p_ret_code          OUT NUMBER,
+      p_ret_info          OUT VARCHAR2,
+      p_inf_id            IN  MI_REQ.INF_ID%TYPE
+   )
+   IS
+      l_outfile_id RSD_OUTFILES.ID%TYPE;
+   BEGIN
+      process_Document_Received_Impl(
+         p_original_req_uuid => p_original_req_uuid,
+         p_message_uuid      => p_message_uuid,
+         p_correlation_id    => p_correlation_id,
+         p_task_id           => p_task_id,
+         p_doc_type          => p_doc_type,
+         p_doc_date          => p_doc_date,
+         p_file_name         => p_file_name,
+         p_file_body         => p_file_body,
+         p_req_id            => p_req_id,
+         p_itm_id            => p_itm_id,
+         p_base_id           => p_base_id,
+         p_file_type         => p_file_type,
+         p_parse_result      => p_parse_result,
+         p_ret_code          => p_ret_code,
+         p_ret_info          => p_ret_info,
+         p_inf_id            => p_inf_id,
+         p_outfile_id        => l_outfile_id,
+         p_resolve_outfile   => FALSE
+      );
    END process_Document_Received;
 
+
+   PROCEDURE process_Document_Received (
+      p_original_req_uuid IN  MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_message_uuid      IN  MI_REQ.MESSAGE_UUID%TYPE,
+      p_correlation_id    IN  MI_REQ.CORRELATION_ID%TYPE,
+
+      p_task_id           IN  RSD_BASES.TASKID%TYPE,
+      p_doc_type          IN  RSD_BASES.FILE_TYPE%TYPE,
+      p_doc_date          IN  RSD_BASES.DOCDATE%TYPE,
+
+      p_file_name         IN  RSD_BASES.FILE_NAME%TYPE,
+      p_file_body         IN  MI_0600.BZIP_DATA%TYPE,
+
+      p_req_id            OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id            OUT MI_0600.ITM_ID%TYPE,
+
+      p_base_id           OUT RSD_BASES.ID%TYPE,
+      p_file_type         OUT RSD_BASES.FILE_TYPE%TYPE,
+      p_parse_result      OUT NUMBER,
+
+      p_ret_code          OUT NUMBER,
+      p_ret_info          OUT VARCHAR2,
+      p_inf_id            IN  MI_REQ.INF_ID%TYPE,
+      p_outfile_id        OUT RSD_OUTFILES.ID%TYPE
+   )
+   IS
+   BEGIN
+      process_Document_Received_Impl(
+         p_original_req_uuid => p_original_req_uuid,
+         p_message_uuid      => p_message_uuid,
+         p_correlation_id    => p_correlation_id,
+         p_task_id           => p_task_id,
+         p_doc_type          => p_doc_type,
+         p_doc_date          => p_doc_date,
+         p_file_name         => p_file_name,
+         p_file_body         => p_file_body,
+         p_req_id            => p_req_id,
+         p_itm_id            => p_itm_id,
+         p_base_id           => p_base_id,
+         p_file_type         => p_file_type,
+         p_parse_result      => p_parse_result,
+         p_ret_code          => p_ret_code,
+         p_ret_info          => p_ret_info,
+         p_inf_id            => p_inf_id,
+         p_outfile_id        => p_outfile_id,
+         p_resolve_outfile   => TRUE
+      );
+   END process_Document_Received;
+
+
+   PROCEDURE process_Document_Received (
+      p_original_req_uuid IN  MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_message_uuid      IN  MI_REQ.MESSAGE_UUID%TYPE,
+      p_correlation_id    IN  MI_REQ.CORRELATION_ID%TYPE,
+
+      p_task_id           IN  RSD_BASES.TASKID%TYPE,
+      p_doc_type          IN  RSD_BASES.FILE_TYPE%TYPE,
+      p_doc_date          IN  RSD_BASES.DOCDATE%TYPE,
+
+      p_file_name         IN  RSD_BASES.FILE_NAME%TYPE,
+      p_file_body         IN  MI_0600.BZIP_DATA%TYPE,
+
+      p_req_id            OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id            OUT MI_0600.ITM_ID%TYPE,
+
+      p_base_id           OUT RSD_BASES.ID%TYPE,
+      p_file_type         OUT RSD_BASES.FILE_TYPE%TYPE,
+      p_parse_result      OUT NUMBER,
+
+      p_ret_code          OUT NUMBER,
+      p_ret_info          OUT VARCHAR2
+   )
+   IS
+   BEGIN
+      process_Document_Received(
+         p_original_req_uuid => p_original_req_uuid,
+         p_message_uuid      => p_message_uuid,
+         p_correlation_id    => p_correlation_id,
+         p_task_id           => p_task_id,
+         p_doc_type          => p_doc_type,
+         p_doc_date          => p_doc_date,
+         p_file_name         => p_file_name,
+         p_file_body         => p_file_body,
+         p_req_id            => p_req_id,
+         p_itm_id            => p_itm_id,
+         p_base_id           => p_base_id,
+         p_file_type         => p_file_type,
+         p_parse_result      => p_parse_result,
+         p_ret_code          => p_ret_code,
+         p_ret_info          => p_ret_info,
+         p_inf_id            => cInf607
+      );
+   END process_Document_Received;
 
 END MI_0607_Api;
 /

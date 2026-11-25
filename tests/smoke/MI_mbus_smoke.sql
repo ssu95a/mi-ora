@@ -145,7 +145,7 @@ BEGIN
 
    l_response_xml :=
       TO_CLOB(
-         q'~<XXLResponse version="1.0" action="send" is_success="true" result_code="SEND_PUBLISHED" result_info="Published"><details>ok</details><parameters>{"published":true,"attempt":2,"name":"A\u0026B","nested":{"x":1},"none":null}</parameters></XXLResponse>~'
+         q'~<XXLResponse version="1.1" action="send" is_success="true" result_code="SEND_PUBLISHED" result_info="Published"><details>ok</details><parameters>[{"name":"published","value":"true"},{"name":"attempt","value":"2"},{"name":"name","value":"A\u0026B"},{"name":"nested","value":"{\"x\":1}"},{"name":"none","value":null}]</parameters></XXLResponse>~'
       );
 
    l_result :=
@@ -185,14 +185,14 @@ BEGIN
       'null response parameter was not preserved'
    );
    assert_True(
-      l_result.parameters('xml_version') = '1.0'
+      l_result.parameters('xml_version') = '1.1'
       AND l_result.parameters('xml_action') = 'send',
       'XXLResponse metadata was not preserved'
    );
 
    l_response_xml :=
       TO_CLOB(
-         q'~<XXLResponse version="1.0" action="send" is_success="false" result_code="SEND_FAILED" result_info="Failed" cause_code="REMOTE_ERROR" cause_info="Remote failure"><details>business details</details><cause_details>cause details</cause_details><parameters>{}</parameters></XXLResponse>~'
+         q'~<XXLResponse version="1.1" action="send" is_success="false" result_code="SEND_FAILED" result_info="Failed" cause_code="REMOTE_ERROR" cause_info="Remote failure"><details>business details</details><cause_details>cause details</cause_details><parameters>[]</parameters></XXLResponse>~'
       );
 
    l_result :=
@@ -212,22 +212,19 @@ BEGIN
       'XXLResponse cause_details were not parsed'
    );
 
-   l_response_xml :=
-      TO_CLOB(
-         q'~<XXLResponse action="refresh" is_success="true" result_code="REFRESH_OK" result_info="Completed"><parameters>{}</parameters></XXLResponse>~'
-      );
-
-   l_result :=
-      MI_ResultCtx.result_From_Xml(
-         p_xml             => l_response_xml,
-         p_expected_action => 'refresh'
-      );
-   assert_Code(l_result, 'REFRESH_OK', TRUE, 'versionless XXLResponse');
+   assert_Parse_Error(
+      p_xml =>
+         TO_CLOB(
+            q'~<XXLResponse action="refresh" is_success="true" result_code="REFRESH_OK" result_info="Completed"><parameters>[]</parameters></XXLResponse>~'
+         ),
+      p_context         => 'versionless XXLResponse',
+      p_expected_action => 'refresh'
+   );
 
    assert_Parse_Error(
       p_xml =>
          TO_CLOB(
-            q'~<XXLResponse version="2.0" action="refresh" is_success="true" result_code="REFRESH_OK"><parameters>{}</parameters></XXLResponse>~'
+            q'~<XXLResponse version="2.0" action="refresh" is_success="true" result_code="REFRESH_OK"><parameters>[]</parameters></XXLResponse>~'
          ),
       p_context         => 'unsupported XXLResponse version',
       p_expected_action => 'refresh'
@@ -236,7 +233,7 @@ BEGIN
    assert_Parse_Error(
       p_xml =>
          TO_CLOB(
-            q'~<XXLResponse version="1.0" action="send" is_success="true" result_code="REFRESH_OK"><parameters>{}</parameters></XXLResponse>~'
+            q'~<XXLResponse version="1.1" action="send" is_success="true" result_code="REFRESH_OK"><parameters>[]</parameters></XXLResponse>~'
          ),
       p_context         => 'successful response with wrong action',
       p_expected_action => 'refresh'
@@ -245,7 +242,7 @@ BEGIN
    assert_Parse_Error(
       p_xml =>
          TO_CLOB(
-            q'~<XXLResponse version="1.0" is_success="true" result_code="REFRESH_OK"><parameters>{}</parameters></XXLResponse>~'
+            q'~<XXLResponse version="1.1" is_success="true" result_code="REFRESH_OK"><parameters>[]</parameters></XXLResponse>~'
          ),
       p_context         => 'successful response without action',
       p_expected_action => 'refresh'
@@ -254,10 +251,10 @@ BEGIN
    l_boundary_value := RPAD('x', 2000, 'x');
    l_response_xml :=
       TO_CLOB(
-            '<XXLResponse version="1.0" action="send" is_success="true" '
-         || 'result_code="SEND_OK"><parameters>{"boundary":"'
+            '<XXLResponse version="1.1" action="send" is_success="true" '
+         || 'result_code="SEND_OK"><parameters>[{"name":"boundary","value":"'
          || l_boundary_value
-         || '"}</parameters></XXLResponse>'
+         || '"}]</parameters></XXLResponse>'
       );
 
    l_result :=
@@ -274,10 +271,10 @@ BEGIN
    assert_Parse_Error(
       p_xml =>
          TO_CLOB(
-               '<XXLResponse version="1.0" action="send" is_success="true" '
-            || 'result_code="SEND_OK"><parameters>{"overlong":"'
+               '<XXLResponse version="1.1" action="send" is_success="true" '
+            || 'result_code="SEND_OK"><parameters>[{"name":"overlong","value":"'
             || l_boundary_value
-            || '"}</parameters></XXLResponse>'
+            || '"}]</parameters></XXLResponse>'
          ),
       p_context         => '2001-character JSON parameter',
       p_expected_action => 'send'
@@ -287,10 +284,10 @@ BEGIN
       RPAD(CHR(92) || 'u0041', 6000, CHR(92) || 'u0041');
    l_response_xml :=
       TO_CLOB(
-            '<XXLResponse version="1.0" action="send" is_success="true" '
-         || 'result_code="SEND_OK"><parameters>{"encoded":"'
+            '<XXLResponse version="1.1" action="send" is_success="true" '
+         || 'result_code="SEND_OK"><parameters>[{"name":"encoded","value":"'
          || l_encoded_value
-         || '"}</parameters></XXLResponse>'
+         || '"}]</parameters></XXLResponse>'
       );
 
    l_result :=
@@ -307,24 +304,48 @@ BEGIN
    assert_Parse_Error(
       p_xml =>
          TO_CLOB(
-               '<XXLResponse version="1.0" action="send" is_success="true" '
-            || 'result_code="SEND_OK"><parameters>{"nested":{"value":"'
-            || RPAD('x', 2000, 'x')
-            || '"}}</parameters></XXLResponse>'
+            q'~<XXLResponse version="1.1" action="send" is_success="true" result_code="SEND_OK"><parameters>[{"name":"nested","value":{"x":1}}]</parameters></XXLResponse>~'
          ),
-      p_context         => 'overlong nested JSON parameter',
+      p_context         => 'non-string JSON parameter value',
       p_expected_action => 'send'
    );
 
    assert_Parse_Error(
       p_xml =>
          TO_CLOB(
-               '<XXLResponse version="1.0" action="send" is_success="true" '
-            || 'result_code="SEND_OK"><parameters>{"'
+               '<XXLResponse version="1.1" action="send" is_success="true" '
+            || 'result_code="SEND_OK"><parameters>[{"name":"'
             || RPAD('n', 101, 'n')
-            || '":1}</parameters></XXLResponse>'
+            || '","value":"1"}]</parameters></XXLResponse>'
          ),
       p_context         => 'overlong JSON parameter name',
+      p_expected_action => 'send'
+   );
+
+   assert_Parse_Error(
+      p_xml =>
+         TO_CLOB(
+            q'~<XXLResponse version="1.1" action="send" is_success="true" result_code="SEND_OK"><parameters>[{"name":"duplicate","value":"1"},{"name":"duplicate","value":"2"}]</parameters></XXLResponse>~'
+         ),
+      p_context         => 'duplicate JSON parameter name',
+      p_expected_action => 'send'
+   );
+
+   assert_Parse_Error(
+      p_xml =>
+         TO_CLOB(
+            q'~<XXLResponse version="1.1" action="send" is_success="true" result_code="SEND_OK"><parameters>{"legacy":"object"}</parameters></XXLResponse>~'
+         ),
+      p_context         => 'legacy JSON object parameters',
+      p_expected_action => 'send'
+   );
+
+   assert_Parse_Error(
+      p_xml =>
+         TO_CLOB(
+            q'~<XXLResponse version="1.1" action="send" is_success="true" result_code="SEND_OK"><parameters>[{"name":"missing"}]</parameters></XXLResponse>~'
+         ),
+      p_context         => 'JSON parameter without value',
       p_expected_action => 'send'
    );
 
