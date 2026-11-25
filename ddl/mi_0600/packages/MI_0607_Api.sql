@@ -4,7 +4,7 @@ IS
    /* MI-edo. DOCUMENT_RECEIVED видов сведений 607 и 608 */
 
    VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.4.0} {24.11.2026} Sulimoff$';
+      '$Id: {1.5.0} {25.11.2026} Sulimoff$';
 
 
    RET_FAIL               CONSTANT PLS_INTEGER := -1;
@@ -45,8 +45,7 @@ IS
       ключом регистрации. Повторный requestId возвращает RET_FAIL; ранее
       созданные journal и business-данные не изменяются.
 
-      При успешном RD_PKG.Parsing параметр p_parse_result содержит
-      RSD_OUTFILES.ID созданного исходящего документа.
+      p_parse_result возвращает фактический результат RD_PKG.Parsing.
 
       COMMIT процедура не выполняет.
    */
@@ -96,6 +95,35 @@ IS
       p_ret_code          OUT NUMBER,
       p_ret_info          OUT VARCHAR2,
       p_inf_id            IN  MI_REQ.INF_ID%TYPE
+   );
+
+   /*
+      Дополнительно возвращает ID исходящего PB2 для созданной записи RSD_BASES.
+      При отсутствии PB2, нескольких PB2 или ошибке приёма возвращает NULL.
+   */
+   PROCEDURE process_Document_Received (
+      p_original_req_uuid IN  MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_message_uuid      IN  MI_REQ.MESSAGE_UUID%TYPE,
+      p_correlation_id    IN  MI_REQ.CORRELATION_ID%TYPE,
+
+      p_task_id           IN  RSD_BASES.TASKID%TYPE,
+      p_doc_type          IN  RSD_BASES.FILE_TYPE%TYPE,
+      p_doc_date          IN  RSD_BASES.DOCDATE%TYPE,
+
+      p_file_name         IN  RSD_BASES.FILE_NAME%TYPE,
+      p_file_body         IN  MI_0600.BZIP_DATA%TYPE,
+
+      p_req_id            OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id            OUT MI_0600.ITM_ID%TYPE,
+
+      p_base_id           OUT RSD_BASES.ID%TYPE,
+      p_file_type         OUT RSD_BASES.FILE_TYPE%TYPE,
+      p_parse_result      OUT NUMBER,
+
+      p_ret_code          OUT NUMBER,
+      p_ret_info          OUT VARCHAR2,
+      p_inf_id            IN  MI_REQ.INF_ID%TYPE,
+      p_outfile_id        OUT RSD_OUTFILES.ID%TYPE
    );
 
 END MI_0607_Api;
@@ -208,7 +236,7 @@ IS
 
 
    /* */
-   PROCEDURE process_Document_Received (
+   PROCEDURE process_Document_Received_Impl (
       p_original_req_uuid IN  MI_REQ.ORIGINAL_REQ_UUID%TYPE,
       p_message_uuid      IN  MI_REQ.MESSAGE_UUID%TYPE,
       p_correlation_id    IN  MI_REQ.CORRELATION_ID%TYPE,
@@ -229,7 +257,9 @@ IS
 
       p_ret_code          OUT NUMBER,
       p_ret_info          OUT VARCHAR2,
-      p_inf_id            IN  MI_REQ.INF_ID%TYPE
+      p_inf_id            IN  MI_REQ.INF_ID%TYPE,
+      p_outfile_id        OUT RSD_OUTFILES.ID%TYPE,
+      p_resolve_outfile   IN  BOOLEAN
    )
    IS
       l_doc_type            RSD_BASES.FILE_TYPE%TYPE;
@@ -252,7 +282,9 @@ IS
 
       l_base_id             RSD_BASES.ID%TYPE;
       l_file_type           RSD_BASES.FILE_TYPE%TYPE;
-      l_parse_result        RSD_OUTFILES.ID%TYPE;
+      l_parse_result        NUMBER;
+      l_outfile_id          RSD_OUTFILES.ID%TYPE;
+      l_candidate_count     NUMBER;
 
       l_err                 VARCHAR2(32767);
 
@@ -362,6 +394,7 @@ IS
       p_base_id      := NULL;
       p_file_type    := NULL;
       p_parse_result := NULL;
+      p_outfile_id   := NULL;
 
       p_ret_code     := RET_FAIL;
       p_ret_info     := NULL;
@@ -702,7 +735,7 @@ IS
       END IF;
 
 
-      -- 6. Run RSD business processing; result is created RSD_OUTFILES.ID.
+      -- 6. Обработка входящего документа в RD_PKG.
       l_err          := NULL;
       l_parse_result := NULL;
 
@@ -730,6 +763,27 @@ IS
       END IF;
 
 
+      IF p_resolve_outfile THEN
+         SELECT COUNT(*), MIN(o.ID)
+           INTO l_candidate_count, l_outfile_id
+           FROM RSD_OUTFILES o
+          WHERE o.PID = l_base_id
+            AND o.FILE_TYPE = 'PB2';
+
+         IF l_candidate_count > 1 THEN
+            l_outfile_id := NULL;
+            l_log.warn(
+               p_message_text => 'Найдено несколько исходящих PB2 для DOCUMENT_RECEIVED',
+               p_action_code  => 'multiple_pb2_outfiles',
+               p_details_text => TO_CLOB(
+                     'base_id=' || l_base_id
+                  || ', candidate_count=' || l_candidate_count
+               )
+            );
+         END IF;
+      END IF;
+
+
       -- 7. Successful business result.
       set_Item_Result(
          p_itm_id     => l_itm_id,
@@ -747,6 +801,7 @@ IS
       p_base_id      := l_base_id;
       p_file_type    := l_file_type;
       p_parse_result := l_parse_result;
+      p_outfile_id   := l_outfile_id;
 
       p_ret_code := RET_OK;
 
@@ -846,6 +901,104 @@ IS
          );
 
          RAISE;
+   END process_Document_Received_Impl;
+
+
+   PROCEDURE process_Document_Received (
+      p_original_req_uuid IN  MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_message_uuid      IN  MI_REQ.MESSAGE_UUID%TYPE,
+      p_correlation_id    IN  MI_REQ.CORRELATION_ID%TYPE,
+
+      p_task_id           IN  RSD_BASES.TASKID%TYPE,
+      p_doc_type          IN  RSD_BASES.FILE_TYPE%TYPE,
+      p_doc_date          IN  RSD_BASES.DOCDATE%TYPE,
+
+      p_file_name         IN  RSD_BASES.FILE_NAME%TYPE,
+      p_file_body         IN  MI_0600.BZIP_DATA%TYPE,
+
+      p_req_id            OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id            OUT MI_0600.ITM_ID%TYPE,
+
+      p_base_id           OUT RSD_BASES.ID%TYPE,
+      p_file_type         OUT RSD_BASES.FILE_TYPE%TYPE,
+      p_parse_result      OUT NUMBER,
+
+      p_ret_code          OUT NUMBER,
+      p_ret_info          OUT VARCHAR2,
+      p_inf_id            IN  MI_REQ.INF_ID%TYPE
+   )
+   IS
+      l_outfile_id RSD_OUTFILES.ID%TYPE;
+   BEGIN
+      process_Document_Received_Impl(
+         p_original_req_uuid => p_original_req_uuid,
+         p_message_uuid      => p_message_uuid,
+         p_correlation_id    => p_correlation_id,
+         p_task_id           => p_task_id,
+         p_doc_type          => p_doc_type,
+         p_doc_date          => p_doc_date,
+         p_file_name         => p_file_name,
+         p_file_body         => p_file_body,
+         p_req_id            => p_req_id,
+         p_itm_id            => p_itm_id,
+         p_base_id           => p_base_id,
+         p_file_type         => p_file_type,
+         p_parse_result      => p_parse_result,
+         p_ret_code          => p_ret_code,
+         p_ret_info          => p_ret_info,
+         p_inf_id            => p_inf_id,
+         p_outfile_id        => l_outfile_id,
+         p_resolve_outfile   => FALSE
+      );
+   END process_Document_Received;
+
+
+   PROCEDURE process_Document_Received (
+      p_original_req_uuid IN  MI_REQ.ORIGINAL_REQ_UUID%TYPE,
+      p_message_uuid      IN  MI_REQ.MESSAGE_UUID%TYPE,
+      p_correlation_id    IN  MI_REQ.CORRELATION_ID%TYPE,
+
+      p_task_id           IN  RSD_BASES.TASKID%TYPE,
+      p_doc_type          IN  RSD_BASES.FILE_TYPE%TYPE,
+      p_doc_date          IN  RSD_BASES.DOCDATE%TYPE,
+
+      p_file_name         IN  RSD_BASES.FILE_NAME%TYPE,
+      p_file_body         IN  MI_0600.BZIP_DATA%TYPE,
+
+      p_req_id            OUT MI_REQ.REQ_ID%TYPE,
+      p_itm_id            OUT MI_0600.ITM_ID%TYPE,
+
+      p_base_id           OUT RSD_BASES.ID%TYPE,
+      p_file_type         OUT RSD_BASES.FILE_TYPE%TYPE,
+      p_parse_result      OUT NUMBER,
+
+      p_ret_code          OUT NUMBER,
+      p_ret_info          OUT VARCHAR2,
+      p_inf_id            IN  MI_REQ.INF_ID%TYPE,
+      p_outfile_id        OUT RSD_OUTFILES.ID%TYPE
+   )
+   IS
+   BEGIN
+      process_Document_Received_Impl(
+         p_original_req_uuid => p_original_req_uuid,
+         p_message_uuid      => p_message_uuid,
+         p_correlation_id    => p_correlation_id,
+         p_task_id           => p_task_id,
+         p_doc_type          => p_doc_type,
+         p_doc_date          => p_doc_date,
+         p_file_name         => p_file_name,
+         p_file_body         => p_file_body,
+         p_req_id            => p_req_id,
+         p_itm_id            => p_itm_id,
+         p_base_id           => p_base_id,
+         p_file_type         => p_file_type,
+         p_parse_result      => p_parse_result,
+         p_ret_code          => p_ret_code,
+         p_ret_info          => p_ret_info,
+         p_inf_id            => p_inf_id,
+         p_outfile_id        => p_outfile_id,
+         p_resolve_outfile   => TRUE
+      );
    END process_Document_Received;
 
 

@@ -9,6 +9,8 @@
 --      the executing schema needs READ on that directory.
 --   5. No external/nontransactional side effects should be caused by the test;
 --      verify RD_PKG contract before using against shared environments.
+--   6. For each PB2 case, use a fixture whose successful Parsing generates
+--      the expected number of PB2 rows (0, 1 or several) for its new base.
 --
 -- This test NEVER COMMITs. It rolls back the package-created MI/RSD rows.
 -- If called business code commits or performs autonomous work, rollback cannot
@@ -28,6 +30,7 @@ WHENEVER SQLERROR EXIT SQL.SQLCODE ROLLBACK
 ACCEPT MI607_DIRECTORY CHAR PROMPT 'Oracle DIRECTORY name containing test JSON: '
 ACCEPT MI607_FILE CHAR PROMPT 'Test JSON filename (on DB server): '
 ACCEPT MI607_DOCTYPE CHAR PROMPT 'Expected docType (UNO or UPO): '
+ACCEPT MI607_PB2_COUNT NUMBER DEFAULT 1 PROMPT 'Expected PB2 row count [1]: '
 
 DECLARE
    l_bfile         BFILE;
@@ -46,7 +49,10 @@ DECLARE
    l_itm_id        MI_0600.ITM_ID%TYPE;
    l_base_id       RSD_BASES.ID%TYPE;
    l_file_type     RSD_BASES.FILE_TYPE%TYPE;
+   l_parse_result  NUMBER;
    l_outfile_id    RSD_OUTFILES.ID%TYPE;
+   l_expected_pb2  NUMBER := &&MI607_PB2_COUNT;
+   l_expected_id   RSD_OUTFILES.ID%TYPE;
    l_ret_code      NUMBER;
    l_ret_info      VARCHAR2(4000);
 
@@ -75,6 +81,8 @@ BEGIN
 
    assert_true(l_doc_type IN ('UNO', 'UPO'), 'docType must be UNO or UPO');
    assert_true(l_file_name IS NOT NULL, 'file name must not be empty');
+   assert_true(l_expected_pb2 >= 0 AND l_expected_pb2 = TRUNC(l_expected_pb2),
+               'expected PB2 count must be a nonnegative integer');
 
    l_wrong_doc_type := CASE l_doc_type WHEN 'UNO' THEN 'UPO' ELSE 'UNO' END;
 
@@ -102,22 +110,25 @@ BEGIN
       p_itm_id            => l_itm_id,
       p_base_id           => l_base_id,
       p_file_type         => l_file_type,
-      p_parse_result      => l_outfile_id,
+      p_parse_result      => l_parse_result,
       p_ret_code          => l_ret_code,
-      p_ret_info          => l_ret_info
+      p_ret_info          => l_ret_info,
+      p_inf_id            => 607,
+      p_outfile_id        => l_outfile_id
    );
 
    DBMS_OUTPUT.put_line('ret_code=' || l_ret_code || '; ret_info=' || l_ret_info);
    DBMS_OUTPUT.put_line('req_id=' || l_req_id || '; itm_id=' || l_itm_id
-      || '; base_id=' || l_base_id || '; outfile_id=' || l_outfile_id);
+      || '; base_id=' || l_base_id || '; parse_result=' || l_parse_result
+      || '; outfile_id=' || l_outfile_id);
 
    assert_true(l_ret_code = MI_0607_Api.RET_OK,
                'expected RET_OK, got ' || NVL(TO_CHAR(l_ret_code), '<NULL>')
                || ': ' || l_ret_info);
    assert_true(l_req_id IS NOT NULL AND l_itm_id IS NOT NULL,
                'MI journal IDs are missing');
-   assert_true(l_base_id IS NOT NULL AND l_outfile_id IS NOT NULL,
-               'CreateBase / Parsing IDs are missing');
+   assert_true(l_base_id IS NOT NULL AND l_parse_result IS NOT NULL,
+               'CreateBase ID or Parsing result is missing');
    assert_true(UPPER(TRIM(l_file_type)) = l_doc_type,
                'detected fileType differs from supplied docType');
 
@@ -173,11 +184,19 @@ BEGIN
       AND DOCDATE = l_doc_date;
    assert_true(l_count = 1, 'RSD_BASES metadata missing');
 
-   SELECT COUNT(*)
-     INTO l_count
+   SELECT COUNT(*), MIN(ID)
+     INTO l_count, l_expected_id
      FROM RSD_OUTFILES
-    WHERE ID = l_outfile_id;
-   assert_true(l_count = 1, 'Parsing returned a nonexistent RSD_OUTFILES.ID');
+    WHERE PID = l_base_id
+      AND FILE_TYPE = 'PB2';
+   assert_true(l_count = l_expected_pb2,
+               'fixture PB2 row count=' || l_count || ', expected=' || l_expected_pb2);
+   IF l_count = 1 THEN
+      assert_true(l_parse_result = 1, 'expected Parsing result 1 for the single-PB2 fixture');
+      assert_true(l_outfile_id = l_expected_id, 'expected actual PB2 row ID in p_outfile_id');
+   ELSE
+      assert_true(l_outfile_id IS NULL, 'expected NULL p_outfile_id without a unique PB2');
+   END IF;
 
    ROLLBACK TO mi_0607_real_smoke;
 
@@ -194,7 +213,7 @@ BEGIN
    SELECT COUNT(*) INTO l_count FROM RSD_BASES WHERE ID = l_base_id;
    assert_true(l_count = 0, 'RSD_BASES survived test rollback');
 
-   SELECT COUNT(*) INTO l_count FROM RSD_OUTFILES WHERE ID = l_outfile_id;
+   SELECT COUNT(*) INTO l_count FROM RSD_OUTFILES WHERE PID = l_base_id;
    assert_true(l_count = 0, 'RSD_OUTFILES survived test rollback');
 
    DBMS_OUTPUT.put_line('1. REAL happy path passed and was rolled back');
@@ -211,7 +230,8 @@ BEGIN
    l_itm_id := NULL;
    l_base_id := NULL;
    l_file_type := NULL;
-   l_outfile_id := NULL;
+   l_parse_result := NULL;
+   l_outfile_id := -1;
    l_ret_code := NULL;
    l_ret_info := NULL;
    l_journal_name := 'MI_0607_' || LOWER(TRIM(l_original_req_uuid));
@@ -234,9 +254,11 @@ BEGIN
       p_itm_id            => l_itm_id,
       p_base_id           => l_base_id,
       p_file_type         => l_file_type,
-      p_parse_result      => l_outfile_id,
+      p_parse_result      => l_parse_result,
       p_ret_code          => l_ret_code,
-      p_ret_info          => l_ret_info
+      p_ret_info          => l_ret_info,
+      p_inf_id            => 607,
+      p_outfile_id        => l_outfile_id
    );
 
    assert_true(l_ret_code = MI_0607_Api.RET_DOC_TYPE_MISMATCH,
@@ -244,7 +266,7 @@ BEGIN
                || NVL(TO_CHAR(l_ret_code), '<NULL>') || ': ' || l_ret_info);
    assert_true(l_req_id IS NOT NULL AND l_itm_id IS NOT NULL,
                'business failure did not preserve MI journal IDs');
-   assert_true(l_base_id IS NULL AND l_outfile_id IS NULL,
+   assert_true(l_base_id IS NULL AND l_parse_result IS NULL AND l_outfile_id IS NULL,
                'business failure exposed rolled-back RSD IDs');
    assert_true(UPPER(TRIM(l_file_type)) = l_doc_type,
                'CreateBase did not detect the real payload type');
