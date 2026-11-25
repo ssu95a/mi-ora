@@ -1,10 +1,15 @@
 CREATE OR REPLACE PACKAGE MI_Transaction
 IS
 
-   VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.0.0} {19.11.2026} Sulimoff$';
+   /*
+      Сервисный пакет по работе с транзакцией и savepoint
+   
+   */
 
+   /* */
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.0} {19.11.2026} Sulimoff$';
 
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2;
 
@@ -39,11 +44,19 @@ IS
 
 END MI_Transaction;
 /
-
 CREATE OR REPLACE PACKAGE BODY MI_Transaction
 IS
 
-   ---------------------------------------------------------------------------
+   /* */
+   FUNCTION get_Version
+      RETURN VARCHAR2
+   IS
+   BEGIN
+      RETURN VERSION;
+   END get_Version;
+
+
+   /* */
    FUNCTION rollback_Savepoint_Impl (
       p_name IN OUT NOCOPY DCL.T_Name
    )
@@ -62,16 +75,8 @@ IS
    END rollback_Savepoint_Impl;
 
 
-   ---------------------------------------------------------------------------
-   FUNCTION get_Version
-      RETURN VARCHAR2
-   IS
-   BEGIN
-      RETURN VERSION;
-   END get_Version;
 
-
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION rollback_Savepoint (
       p_name  IN OUT NOCOPY DCL.T_Name,
       p_log   IN            MI_Logger_T
@@ -88,23 +93,17 @@ IS
 
    EXCEPTION
       WHEN OTHERS THEN
-         p_log.error(
+         p_log.error (
             p_message_text => 'DCL rollback failed',
             p_action_code  => 'rollback',
-            p_details_text =>
-               TO_CLOB(
-                     'savepoint='
-                  || l_name
-                  || '; error='
-                  || SQLERRM
-               )
+            p_details_text => TO_CLOB( 'savepoint=' || l_name || '; error='  || SQLERRM )
          );
 
          RETURN FALSE;
    END rollback_Savepoint;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE rollback_And_Warn (
       p_name  IN OUT NOCOPY DCL.T_Name,
       p_log   IN            MI_Logger_T

@@ -24,9 +24,11 @@ IS
          - PAYLOAD имеет тип CLOB.
 
       При p_send_response = 1 дополнительно создаёт response и переводит его
-      в READY. Oracle package намеренно не вызывает BUS: caller обязан сначала
+      в READY. 
+      Oracle package намеренно не вызывает BUS: caller обязан сначала
       COMMIT созданных request/item/response, а затем публиковать READY response
-      отдельной transport-операцией. Row lock через BUS не удерживается.
+      отдельной transport-операцией. 
+      Row lock через BUS не удерживается.
 
       COMMIT/ROLLBACK не выполняет. При ошибке откатывает только собственную
       работу через DCL.SavePoint/RollBack.
@@ -52,7 +54,6 @@ IS
 
 END MI_Request_Sup;
 /
-
 CREATE OR REPLACE PACKAGE BODY MI_Request_Sup
 IS
 
@@ -67,7 +68,7 @@ IS
       );
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2
    IS
@@ -76,7 +77,7 @@ IS
    END get_Version;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION normalize_Item_Table (
       p_item_table IN VARCHAR2
    )
@@ -152,7 +153,7 @@ IS
    END normalize_Item_Table;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE apply_Request (
       p_inf_id                IN  MI_REQ.INF_ID%TYPE,
       p_item_table            IN  VARCHAR2,
