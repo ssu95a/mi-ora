@@ -1,5 +1,7 @@
 CREATE OR REPLACE PACKAGE MI_Logger
 AS
+  
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.3.1} {26.11.2026} Sulimoff$';
 
    -- Уровни логирования.
    --
@@ -16,33 +18,31 @@ AS
    LEVEL_FATAL CONSTANT Level_t := 6;
    LEVEL_OFF   CONSTANT Level_t := 7;
 
-
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2;
 
-
+   /* разрешить */
    PROCEDURE enable_Log;
 
+   /* запретить */
    PROCEDURE disable_Log;
 
 
    /*
       Минимальный уровень записи.
-
       trc < dbg < inf < wrn < err
-
       По умолчанию: dbg.
    */
    PROCEDURE set_Min_Level (
       p_level IN Level_t
    );
 
-
+   /* */
    FUNCTION is_Enabled (
       p_level IN Level_t
    )
       RETURN BOOLEAN;
-
 
    /*
       Универсальная точка записи.
@@ -184,12 +184,11 @@ AS
    );
 
 
-   ----------------------------------------------------------------------------
    -- Синтаксический сахар.
    --
    -- Эти процедуры не имеют собственной логики записи и являются только
    -- тонкими wrappers над trace/debug/info.
-   ----------------------------------------------------------------------------
+   
    PROCEDURE enter_f (
       p_logger_name    IN VARCHAR2,
       p_function_name  IN VARCHAR2,
@@ -292,7 +291,7 @@ AS
 
    g_log_enabled BOOLEAN     := TRUE;
    
-   g_min_level   Level_t := LEVEL_DEBUG;
+   g_min_level   Level_t := LEVEL_TRACE;
 
 
 /* */

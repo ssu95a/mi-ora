@@ -1,13 +1,10 @@
 CREATE OR REPLACE PACKAGE MI_0606_Api
 IS
 
-   VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.3.0} {24.11.2026} Sulimoff$';
+   /* */
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.3.2} {26.11.2026} Sulimoff$';
 
-
-   ---------------------------------------------------------------------------
    -- Коды результата JDBC boundary.
-   ---------------------------------------------------------------------------
    RET_FAIL                  CONSTANT PLS_INTEGER := -1;
    RET_OK                    CONSTANT PLS_INTEGER :=  0;
    RET_NO_DATA               CONSTANT PLS_INTEGER :=  1;
@@ -18,17 +15,16 @@ IS
    RET_OTHER_APPLIED         CONSTANT PLS_INTEGER :=  6;
 
    /*
-      RET_* describes expected source/protocol outcomes at the JDBC boundary.
-      DB, transaction and internal-contract failures are raised as exceptions;
-      the caller must roll back the whole transaction.
+      RET_* описывает ожидаемые результаты работы источника/протокола на границе JDBC. 
+      Сбои в работе базы данных, транзакции и внутреннего контракта обрабатываются как исключения;
+      Вызывающая сторона должна откатить всю транзакцию.   
    */
 
-
+   /* Версия */
    FUNCTION get_Version
       RETURN VARCHAR2;
 
 
-   ---------------------------------------------------------------------------
    /*
       Публикует команду send_document для одной записи RSD_OUTFILES.
 
@@ -40,6 +36,7 @@ IS
       Создание request и перевод его состояния остаются на стороне Java.
    */
    PROCEDURE send_Document (
+      
       p_outfile_id  IN  NUMBER,
 
       p_req_id      OUT NUMBER,
@@ -48,17 +45,18 @@ IS
    );
 
 
-   ---------------------------------------------------------------------------
    /*
       Создаёт исходящий request 606 из одной записи RSD_OUTFILES.
 
       Одна запись RSD_OUTFILES соответствует:
-         одному MI_REQ;
-         одному MI_0600 item;
-         одному SEND_DOCUMENT.
+           одному MI_REQ;
+           одному MI_0600 item;
+           одному SEND_DOCUMENT.
 
       TASKID является повторяемым correlation identifier.
+      
       Идентичность конкретного файла задаёт DOCKEY.
+      
       Payload берётся только из FILEBODY; BINFILE не используется.
 
       Процедура:
@@ -71,6 +69,7 @@ IS
       COMMIT процедура не выполняет.
    */
    PROCEDURE create_Request (
+      
       p_outfile_id  IN  RSD_OUTFILES.ID%TYPE,
 
       p_req_id      OUT MI_REQ.REQ_ID%TYPE,
@@ -80,7 +79,7 @@ IS
       p_ret_info    OUT VARCHAR2
    );
 
-   ---------------------------------------------------------------------------
+
    /*
       Регистрирует pending RSD_OUTFILES для исходящего вида сведений 606.
 
@@ -110,7 +109,7 @@ IS
       p_ret_info        OUT VARCHAR2
    );
 
-   ---------------------------------------------------------------------------
+
    /*
       Возвращает данные SEND_DOCUMENT для уже зарегистрированного request.
 
@@ -118,6 +117,7 @@ IS
       Mutable RSD_OUTFILES при retry не перечитывается.
    */
    PROCEDURE prepare_Send_Document (
+
       p_req_id       IN  MI_REQ.REQ_ID%TYPE,
 
       p_task_id      OUT VARCHAR2,
@@ -132,19 +132,19 @@ IS
    );
 
 
-   ---------------------------------------------------------------------------
    /*
       Ответ DOCUMENT_SUBMITTED на SEND_DOCUMENT.
 
       SUCCESS является промежуточным ACK:
-         request остаётся SENT.
+             request остаётся SENT.
 
       ERROR / VALIDATION_ERROR считаются терминальным business outcome:
          item -> FAIL;
          request -> DONE.
 
       Переход RSD_OUTFILES.REC_STATE из 2 в 5 здесь пока не выполняется:
-      terminal semantics source row требует отдельного подтверждения.
+         terminal semantics source row требует отдельного подтверждения.
+      
    */
    PROCEDURE apply_Document_Submitted (
       p_request_uuid   IN  MI_REQ.EXTERNAL_UUID%TYPE,
@@ -162,7 +162,6 @@ IS
    );
 
 
-   ---------------------------------------------------------------------------
    /*
       Терминальный DOCUMENT_STATUS.
 
@@ -192,7 +191,6 @@ IS
    );
 
 
-   ---------------------------------------------------------------------------
    /*
       Терминальный protocol FAULT.
 
@@ -225,16 +223,17 @@ CREATE OR REPLACE PACKAGE BODY MI_0606_Api
 IS
 
    cLogger CONSTANT VARCHAR2(64) := 'mi.0606';
+
    cInfId  CONSTANT MI_REQ.INF_ID%TYPE := 606;
 
    cFileTypePb2 CONSTANT RSD_OUTFILES.FILE_TYPE%TYPE := 'PB2';
    cDocTypePb2  CONSTANT VARCHAR2(100) := 'IMPOSSIBILITY_RESPONSE';
 
    /* Глобальный logger для простых операций без локального context. */
-   g_log CONSTANT MI_Logger_T := MI_Logger_T( p_logger_name => cLogger, p_package_name => $$PLSQL_UNIT );
+   g_log MI_Logger_T := MI_Logger_T( p_logger_name => cLogger, p_package_name => $$PLSQL_UNIT );
 
 
-   ---------------------------------------------------------------------------
+   /* */
    TYPE source_Row_t IS RECORD (
       id         RSD_OUTFILES.ID%TYPE,
       file_type  RSD_OUTFILES.FILE_TYPE%TYPE,
@@ -255,7 +254,7 @@ IS
    END get_Version;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE send_Document (
       p_outfile_id  IN  NUMBER,
 
@@ -264,37 +263,28 @@ IS
       p_ret_info    OUT VARCHAR2
    )
    IS
-      l_result            MI_ResultCtx.exec_Result_t;
-      l_result_req_id     NUMBER;
-      l_parameters        CLOB;
-      l_delivery_outcome  VARCHAR2(2000);
-      l_retry_safe        VARCHAR2(2000);
-      l_is_ambiguous      BOOLEAN := FALSE;
+      l_result           MI_ResultCtx.exec_Result_t;
+      l_result_req_id    NUMBER;
+      l_parameters       CLOB;
+      l_delivery_outcome VARCHAR2(2000);
+      l_retry_safe       VARCHAR2(2000);
+      l_is_ambiguous     BOOLEAN := FALSE;
+      
    BEGIN
-      p_req_id   := NULL;
+      
+      p_req_Id   := NULL;
       p_ret_code := RET_FAIL;
       p_ret_info := NULL;
 
-      IF p_outfile_id IS NULL
-         OR p_outfile_id <= 0
-         OR p_outfile_id <> TRUNC(p_outfile_id)
+      IF p_outfile_Id IS NULL OR p_outfile_Id <= 0 OR p_outfile_Id <> TRUNC(p_outfile_Id)
       THEN
-         p_ret_info :=
-            'MI_0606_SEND_DOCUMENT_INVALID_OUTFILE_ID: '
-            || 'p_outfile_id must be a positive integer';
+         p_ret_info := 'MI_0606_SEND_DOCUMENT_INVALID_OUTFILE_ID: p_outfile_id must be a positive integer';
          RETURN;
       END IF;
 
-      l_parameters :=
-            '{"outfile_id":'
-         || TO_CHAR(
-               p_outfile_id,
-               'TM9',
-               'NLS_NUMERIC_CHARACTERS=''.,'''
-            )
-         || '}';
+      l_parameters := '{"outfile_id":' || TO_CHAR( p_outfile_id, 'TM9', 'NLS_NUMERIC_CHARACTERS=''.,''' )  || '}';
 
-      MI_mbus.send_Command(
+      MI_mbus.send_Command (
          p_result     => l_result,
          p_inf_id     => cInfId,
          p_action     => 'send_document',
@@ -302,7 +292,7 @@ IS
          p_parameters => l_parameters
       );
 
-      l_result_req_id := MI_ResultCtx.result_Number(l_result, 'req_id');
+      l_result_req_id := MI_ResultCtx.result_Number( l_result, 'req_id');
 
       IF l_result_req_id IS NOT NULL
          AND l_result_req_id > 0
@@ -320,105 +310,61 @@ IS
       );
 
       IF l_result.parameters.EXISTS('delivery_outcome') THEN
-         l_delivery_outcome :=
-            l_result.parameters('delivery_outcome');
 
-         p_ret_info :=
-            SUBSTR(
-                  p_ret_info
-               || '; delivery_outcome='
-               || NVL(l_delivery_outcome, '<NULL>'),
-               1,
-               4000
-            );
+         l_delivery_outcome := l_result.parameters('delivery_outcome');
+
+         p_ret_info := SUBSTR( p_ret_info || '; delivery_outcome=' || NVL(l_delivery_outcome, '<NULL>'), 1, 4000 );
 
          IF UPPER(TRIM(l_delivery_outcome)) = 'UNKNOWN' THEN
             l_is_ambiguous := TRUE;
          END IF;
+         
       END IF;
 
-      IF l_result.parameters.EXISTS('retry_safe') THEN
-         l_retry_safe := l_result.parameters('retry_safe');
+      IF l_result.parameters.EXISTS('retry_safe') THEN l_retry_safe := l_result.parameters('retry_safe');
 
-         p_ret_info :=
-            SUBSTR(
-                  p_ret_info
-               || '; retry_safe='
-               || NVL(l_retry_safe, '<NULL>'),
-               1,
-               4000
-            );
+         p_ret_info := SUBSTR( p_ret_info || '; retry_safe=' || NVL(l_retry_safe, '<NULL>'), 1, 4000 );
 
          IF TRIM(l_retry_safe) = '0' THEN
             l_is_ambiguous := TRUE;
          END IF;
+         
       END IF;
 
       IF p_req_id IS NOT NULL THEN
-         p_ret_info :=
-            SUBSTR(
-                  p_ret_info
-               || '; req_id='
-               || TO_CHAR(p_req_id, 'TM9'),
-               1,
-               4000
-            );
+         p_ret_info := SUBSTR( p_ret_info || '; req_id=' || TO_CHAR(p_req_id, 'TM9'), 1, 4000 );
       END IF;
 
       IF l_result.parameters.EXISTS('status_cd') THEN
-         p_ret_info :=
-            SUBSTR(
-                  p_ret_info
-               || '; status_cd='
-               || NVL(l_result.parameters('status_cd'), '<NULL>'),
-               1,
-               4000
-            );
+         p_ret_info := SUBSTR( p_ret_info  || '; status_cd=' || NVL(l_result.parameters('status_cd'), '<NULL>'), 1, 4000 );
       END IF;
 
       IF l_is_ambiguous THEN
          p_ret_code := RET_FAIL;
-
       ELSIF l_result.result_code = 'SEND_PUBLISHED'
          AND MI_ResultCtx.is_Success(l_result)
          AND p_req_id IS NOT NULL
       THEN
          p_ret_code := RET_OK;
-
       ELSIF l_result.result_code = 'ALREADY_REGISTERED'
          AND p_req_id IS NOT NULL
       THEN
          p_ret_code := RET_EXISTS;
-
       ELSE
+
          p_ret_code := RET_FAIL;
 
-         IF l_result.result_code IN (
-               'SEND_PUBLISHED',
-               'ALREADY_REGISTERED'
-            )
-            AND p_req_id IS NULL
+         IF l_result.result_code IN ( 'SEND_PUBLISHED', 'ALREADY_REGISTERED' ) AND p_req_id IS NULL
          THEN
-            p_ret_info :=
-               SUBSTR(
-                     p_ret_info
-                  || '; contract_error=positive req_id is required',
-                  1,
-                  4000
-               );
+            p_ret_info := SUBSTR( p_ret_info || '; contract_error=positive req_id is required', 1, 4000 );
          END IF;
       END IF;
 
    EXCEPTION
       WHEN OTHERS THEN
          p_ret_code := RET_FAIL;
-         p_ret_info :=
-            SUBSTR(
-                  'MI_0606_SEND_DOCUMENT_FAILED: '
-               || SQLERRM,
-               1,
-               4000
-            );
+         p_ret_info := SUBSTR( 'MI_0606_SEND_DOCUMENT_FAILED: ' || SQLERRM, 1, 4000 );
+         
    END send_Document;
 
 
@@ -437,7 +383,8 @@ IS
       );
    END raise_Technical_Error;
 
-   ---------------------------------------------------------------------------
+
+   /* Читает свойство типа int */
    FUNCTION capture_Int_Property (
       p_name          IN VARCHAR2,
       p_default_value IN PLS_INTEGER,
@@ -449,54 +396,38 @@ IS
       l_raw    VARCHAR2(32767);
       l_value  NUMBER;
    BEGIN
-      l_raw :=
-         MI_Prp.get_Inf_Property(
-            p_inf_id    => cInfId,
-            p_prp_id    => p_name,
-            p_def_value => TO_CHAR(p_default_value)
-         );
 
+      l_raw := MI_Prp.get_Inf_Property (
+         p_inf_id    => cInfId,
+         p_prp_id    => p_name,
+         p_def_value => TO_CHAR(p_default_value)
+      );
 
       BEGIN
          l_value := TO_NUMBER(TRIM(l_raw));
-
       EXCEPTION
          WHEN VALUE_ERROR THEN
-            raise_Technical_Error(
+            raise_Technical_Error (
                p_code => 'MI_0606_INVALID_CAPTURE_PROPERTY',
-               p_info =>
-                     'Invalid '
-                  || p_name
-                  || '='
-                  || NVL(l_raw, '<NULL>')
+               p_info => 'Invalid ' || p_name  || '=' || NVL( l_raw, '<NULL>')
             );
       END;
 
 
-      IF l_value <> TRUNC(l_value)
-         OR l_value < p_min_value
-         OR l_value > p_max_value
+      IF l_value <> TRUNC(l_value) OR l_value < p_min_value OR l_value > p_max_value
       THEN
-         raise_Technical_Error(
+         raise_Technical_Error (
             p_code => 'MI_0606_INVALID_CAPTURE_PROPERTY',
-            p_info =>
-                  'Invalid '
-               || p_name
-               || '='
-               || NVL(l_raw, '<NULL>')
-               || '; expected integer '
-               || p_min_value
-               || '..'
-               || p_max_value
+            p_info => 'Invalid ' || p_name || '=' || NVL(l_raw, '<NULL>') || '; expected integer ' || p_min_value || '..' || p_max_value
          );
       END IF;
 
-
       RETURN TRUNC(l_value);
+      
    END capture_Int_Property;
 
 
-   ---------------------------------------------------------------------------
+   /* Считывает свойство: включен ли ВС в работу */
    FUNCTION capture_Enabled
       RETURN BOOLEAN
    IS
@@ -511,29 +442,22 @@ IS
             )
          );
 
-
       IF l_value = '1' THEN
          RETURN TRUE;
       END IF;
-
 
       IF l_value = '0' THEN
          RETURN FALSE;
       END IF;
 
-
       raise_Technical_Error(
          p_code => 'MI_0606_INVALID_CAPTURE_PROPERTY',
-         p_info =>
-               'Invalid ENABLED='
-            || NVL(l_value, '<NULL>')
-            || '; expected 0 or 1'
+         p_info => 'Invalid ENABLED=' || NVL(l_value, '<NULL>') || '; expected 0 or 1'
       );
 
-
       RETURN FALSE; -- unreachable
+      
    END capture_Enabled;
-
 
 
    /* */
@@ -628,19 +552,17 @@ IS
       l_lang_context  INTEGER := DBMS_LOB.DEFAULT_LANG_CTX;
       l_warning       INTEGER;
    BEGIN
-      IF p_value IS NULL
-         OR DBMS_LOB.getlength(p_value) = 0
+
+      IF p_value IS NULL OR DBMS_LOB.getlength(p_value) = 0
       THEN
          RETURN NULL;
       END IF;
-
 
       DBMS_LOB.createTemporary(
          l_blob,
          TRUE,
          DBMS_LOB.CALL
       );
-
 
       DBMS_LOB.convertToBlob(
          dest_lob     => l_blob,
@@ -652,7 +574,6 @@ IS
          lang_context => l_lang_context,
          warning      => l_warning
       );
-
 
       IF l_warning IS NULL OR l_warning <> DBMS_LOB.NO_WARNING
       THEN
@@ -683,13 +604,13 @@ IS
    )
    IS
    BEGIN
-      IF p_blob IS NOT NULL
-         AND DBMS_LOB.isTemporary(p_blob) = 1
+      IF p_blob IS NOT NULL AND DBMS_LOB.isTemporary(p_blob) = 1
       THEN
          DBMS_LOB.freeTemporary(p_blob);
       END IF;
-
+      
       p_blob := NULL;
+      
    END free_Temporary_Blob;
 
 
@@ -704,12 +625,11 @@ IS
    IS
       l_journal_name MI_0600.CZIP_NAME%TYPE;
    BEGIN
+      
       p_req_id := NULL;
       p_itm_id := NULL;
 
-      l_journal_name :=
-         journal_Name(p_outfile_id);
-
+      l_journal_name := journal_Name(p_outfile_id);
 
       SELECT r.REQ_ID,
              i.ITM_ID
@@ -718,12 +638,11 @@ IS
         FROM MI_REQ r
         JOIN MI_0600 i
           ON i.REQ_ID = r.REQ_ID
-       WHERE r.INF_ID = cInfId
+       WHERE 
+             r.INF_ID = cInfId
          AND i.CZIP_NAME = l_journal_name;
 
-
       RETURN TRUE;
-
 
    EXCEPTION
       WHEN NO_DATA_FOUND THEN
@@ -731,13 +650,13 @@ IS
          p_itm_id := NULL;
 
          RETURN FALSE;
+         
    END find_Existing_Source;
 
 
-
-
-   /* */
+   /* Готовит документ к отправке */
    PROCEDURE prepare_Send_Document (
+      
       p_req_id       IN  MI_REQ.REQ_ID%TYPE,
 
       p_task_id      OUT VARCHAR2,
@@ -753,6 +672,7 @@ IS
    IS
       l_journal_name MI_0600.CZIP_NAME%TYPE;
    BEGIN
+      
       p_task_id    := NULL;
       p_doc_key    := NULL;
       p_doc_type   := NULL;
@@ -763,16 +683,17 @@ IS
       p_ret_code   := RET_FAIL;
       p_ret_info   := NULL;
 
-
       IF p_req_id IS NULL THEN
-         raise_Technical_Error(
+         raise_Technical_Error (
             p_code => 'MI_0606_INVALID_REQUEST_ID',
             p_info => 'p_req_id must not be NULL'
          );
       END IF;
 
+      g_log.context( p_inf_Id => cInfId, p_req_id => p_req_id );
 
       BEGIN
+         
          SELECT TRIM(r.CTAXREQ_ID),
                 TRIM(i.EXTERNAL_UUID),
                 TRIM(f.CZIP_FILE_NAME),
@@ -794,34 +715,23 @@ IS
       EXCEPTION
          WHEN NO_DATA_FOUND THEN
             p_ret_code := RET_NO_DATA;
-
-            p_ret_info :=
-               'SEND_DOCUMENT source not found: req_id='
-               || p_req_id;
-
+            p_ret_info := 'SEND_DOCUMENT source not found: req_id='|| p_req_id;
             RETURN;
 
          WHEN TOO_MANY_ROWS THEN
             raise_Technical_Error(
                p_code => 'MI_0606_MULTIPLE_FILES',
-               p_info =>
-                     'SEND_DOCUMENT journal contains multiple files: req_id='
-                  || p_req_id
+               p_info => 'SEND_DOCUMENT journal contains multiple files: req_id=' || p_req_id
             );
       END;
 
-
-      IF l_journal_name IS NULL
-         OR SUBSTR(l_journal_name, 1, LENGTH('MI_0606_')) <> 'MI_0606_'
+      IF l_journal_name IS NULL OR SUBSTR(l_journal_name, 1, LENGTH('MI_0606_')) <> 'MI_0606_'
       THEN
          raise_Technical_Error(
             p_code => 'MI_0606_INVALID_JOURNAL_LINK',
-            p_info =>
-                  'Invalid SEND_DOCUMENT journal link: req_id='
-               || p_req_id
+            p_info => 'Invalid SEND_DOCUMENT journal link: req_id=' || p_req_id
          );
       END IF;
-
 
       IF p_task_id IS NULL
          OR NOT MI_Utils.is_Uuid(p_task_id)
@@ -833,27 +743,20 @@ IS
       THEN
          raise_Technical_Error(
             p_code => 'MI_0606_INCOMPLETE_JOURNAL',
-            p_info =>
-                  'SEND_DOCUMENT journal is incomplete: req_id='
-               || p_req_id
+            p_info => 'SEND_DOCUMENT journal is incomplete: req_id=' || p_req_id
          );
       END IF;
 
-
       /*
-         Capture currently accepts only PB2. Therefore the resolved protocol
-         value is immutable and does not require rereading mutable
-         RSD_OUTFILES. Before another FILE_TYPE is accepted, the model must
-         get a dedicated snapshot field for docType/errorCode.
+         В настоящее время Capture поддерживает только PB2. 
       */
       p_doc_type   := cDocTypePb2;
       p_error_code := NULL;
 
+      p_ret_code   := RET_OK;
+      p_ret_info   := 'SEND_DOCUMENT prepared';
 
-      p_ret_code := RET_OK;
-      p_ret_info := 'SEND_DOCUMENT prepared';
-
-      g_log.debug(
+      g_log.debug (
          p_message_text => 'SEND_DOCUMENT prepared',
          p_action_code  => 'prepare',
          p_details_text => TO_CLOB('req_id=' || p_req_id)
@@ -864,15 +767,11 @@ IS
          g_log.error(
             p_message_text => 'prepare_Send_Document failed',
             p_action_code  => 'prepare',
-            p_details_text =>
-               TO_CLOB(
-                     SQLERRM
-                  || CHR(10)
-                  || DBMS_UTILITY.format_error_backtrace
-               )
+            p_details_text => TO_CLOB( SQLERRM || CHR(10) || DBMS_UTILITY.format_error_backtrace )
          );
 
          RAISE;
+         
    END prepare_Send_Document;
 
 
@@ -884,6 +783,7 @@ IS
          MI_0600
    */
    PROCEDURE lock_By_Request (
+      
       p_request_uuid   IN  MI_REQ.EXTERNAL_UUID%TYPE,
       p_doc_key        IN  MI_0600.EXTERNAL_UUID%TYPE,
 
@@ -907,7 +807,6 @@ IS
          AND EXTERNAL_UUID = TRIM(p_request_uuid)
          FOR UPDATE;
 
-
       SELECT ITM_ID,
              EXTERNAL_UUID,
              MESSAGE_UUID
@@ -918,19 +817,14 @@ IS
        WHERE REQ_ID = p_req_id
          FOR UPDATE;
 
-
-      IF p_doc_key IS NOT NULL
-         AND TRIM(l_item_uuid) <> TRIM(p_doc_key)
+      IF p_doc_key IS NOT NULL AND TRIM(l_item_uuid) <> TRIM(p_doc_key)
       THEN
          raise_Technical_Error(
             p_code => 'MI_0606_DOC_KEY_MISMATCH',
-            p_info =>
-                  'SEND_DOCUMENT docKey mismatch: expected='
-               || TRIM(l_item_uuid)
-               || ', actual='
-               || TRIM(p_doc_key)
+            p_info => 'SEND_DOCUMENT docKey mismatch: expected=' || TRIM(l_item_uuid) || ', actual=' || TRIM(p_doc_key)
          );
       END IF;
+      
    END lock_By_Request;
 
 
@@ -955,99 +849,92 @@ IS
         INTO p_req_id,
              p_itm_id
         FROM MI_0600
-       WHERE EXTERNAL_UUID = TRIM(p_doc_key);
-
+       WHERE 
+             EXTERNAL_UUID = TRIM(p_doc_key);
 
       SELECT STATUS_CD,
              CORRELATION_ID
         INTO p_status_cd,
              p_correlation_id
         FROM MI_REQ
-       WHERE REQ_ID = p_req_id
+       WHERE 
+             REQ_ID = p_req_id
          AND INF_ID = cInfId
          FOR UPDATE;
-
 
       SELECT MESSAGE_UUID
         INTO p_current_msg
         FROM MI_0600
-       WHERE ITM_ID = p_itm_id
+       WHERE 
+             ITM_ID = p_itm_id
          AND REQ_ID = p_req_id
          FOR UPDATE;
+         
    END lock_By_Doc_Key;
 
 
    /* */
    PROCEDURE apply_Terminal_Result (
-      p_req_id          IN MI_REQ.REQ_ID%TYPE,
-      p_itm_id          IN MI_0600.ITM_ID%TYPE,
-      p_status_cd       IN MI_REQ.STATUS_CD%TYPE,
-      p_current_msg     IN MI_0600.MESSAGE_UUID%TYPE,
+      p_req_id        IN MI_REQ.REQ_ID%TYPE,
+      p_itm_id        IN MI_0600.ITM_ID%TYPE,
+      p_status_cd     IN MI_REQ.STATUS_CD%TYPE,
+      p_current_msg   IN MI_0600.MESSAGE_UUID%TYPE,
 
-      p_message_uuid    IN MI_REQ.MESSAGE_UUID%TYPE,
+      p_message_uuid  IN MI_REQ.MESSAGE_UUID%TYPE,
 
-      p_ires_code       IN MI_0600.IRES_CODE%TYPE,
-      p_error_code      IN MI_0600.ERROR_CODE%TYPE,
-      p_info            IN CLOB,
-      p_response_time   IN TIMESTAMP WITH TIME ZONE,
+      p_ires_code     IN MI_0600.IRES_CODE%TYPE,
+      p_error_code    IN MI_0600.ERROR_CODE%TYPE,
+      p_info          IN CLOB,
+      p_response_time IN TIMESTAMP WITH TIME ZONE,
 
-      p_ret_code        OUT NUMBER,
-      p_ret_info        OUT VARCHAR2
+      p_ret_code      OUT NUMBER,
+      p_ret_info      OUT VARCHAR2
    )
    IS
       l_transition MI_ResultCtx.exec_Result_t;
    BEGIN
-      ------------------------------------------------------------------------
+
       -- Уже применённый terminal result.
-      ------------------------------------------------------------------------
       IF p_current_msg IS NOT NULL THEN
+         
          IF p_status_cd <> MI_Request_Api.STATUS_DONE THEN
-            raise_Technical_Error(
+            raise_Technical_Error (
                p_code => 'MI_0606_INCONSISTENT_RESULT',
-               p_info =>
-                  'Item has terminal MESSAGE_UUID but request is not DONE'
+               p_info => 'Item has terminal MESSAGE_UUID but request is not DONE'
             );
          END IF;
 
          IF TRIM(p_current_msg) = TRIM(p_message_uuid) THEN
-            p_ret_code :=
-               RET_ALREADY_APPLIED;
-
-            p_ret_info :=
-               'Terminal result already applied';
+            p_ret_code := RET_ALREADY_APPLIED;
+            p_ret_info := 'Terminal result already applied';
 
             RETURN;
+            
          END IF;
 
-
          p_ret_code := RET_OTHER_APPLIED;
-
-         p_ret_info :=
-               'Item result already applied by another message: '
-            || TRIM(p_current_msg);
+         p_ret_info := 'Item result already applied by another message: ' || TRIM(p_current_msg);
 
          RETURN;
+         
       END IF;
 
-
       IF p_status_cd <> MI_Request_Api.STATUS_SENT THEN
+         
          IF p_status_cd = MI_Request_Api.STATUS_DONE THEN
             raise_Technical_Error(
                p_code => 'MI_0606_INCONSISTENT_RESULT',
-               p_info =>
-                  'Request is DONE but item has no terminal MESSAGE_UUID'
+               p_info => 'Request is DONE but item has no terminal MESSAGE_UUID'
             );
+         
          END IF;
 
          p_ret_code := RET_BAD_STATE;
-
-         p_ret_info :=
-               'Request must be SENT, actual='
-            || MI_Request_Api.status_Name(p_status_cd);
+         p_ret_info := 'Request must be SENT, actual=' || MI_Request_Api.status_Name(p_status_cd);
 
          RETURN;
+         
       END IF;
-
 
       UPDATE MI_0600
          SET IRES_CODE    = p_ires_code,
@@ -1055,16 +942,14 @@ IS
              CRES_INFO    = p_info,
              TRES_TIME    = p_response_time,
              MESSAGE_UUID = TRIM(p_message_uuid)
-       WHERE ITM_ID = p_itm_id
+       WHERE 
+             ITM_ID = p_itm_id
          AND MESSAGE_UUID IS NULL;
-
 
       IF SQL%ROWCOUNT <> 1 THEN
          raise_Technical_Error(
             p_code => 'MI_0606_ITEM_RESULT_NOT_UPDATED',
-            p_info =>
-                  'MI_0600 terminal result update failed: itm_id='
-               || p_itm_id
+            p_info => 'MI_0600 terminal result update failed: itm_id=' || p_itm_id
          );
       END IF;
 
@@ -1075,18 +960,15 @@ IS
       */
       l_transition := MI_Request_Api.to_Success(p_req_id);
 
-
       IF MI_ResultCtx.is_Failed(l_transition) THEN
          MI_ResultCtx.raise_Error(
             MI_ResultCtx.wrap_Exception(
                p_cause => l_transition,
                p_code  => 'MI_0606_REQUEST_COMPLETE_FAILED',
-               p_info  =>
-                  'Не удалось завершить request после terminal response'
+               p_info  => 'Не удалось завершить request после terminal response'
             )
          );
       END IF;
-
 
       p_ret_code := RET_OK;
       p_ret_info := 'Terminal result applied';
@@ -1139,33 +1021,35 @@ IS
       p_ret_code := RET_FAIL;
       p_ret_info := NULL;
 
-
       IF p_request_uuid IS NULL OR NOT MI_Utils.is_Uuid(TRIM(p_request_uuid))
       THEN
-         raise_Technical_Error(
+         raise_Technical_Error (
             p_code => 'MI_0606_INVALID_REQUEST_UUID',
-            p_info => 'DOCUMENT_SUBMITTED request UUID must be valid'
+            p_info => 'DOCUMENT_SUBMITTED request UUID must be valid',
+            p_details 
+                   => 'Ошибочное значение p_request_uuid ' || nvl(p_request_uuid,'<null>') || '. Ожидается UUID'
          );
       END IF;
-
 
       IF p_message_uuid IS NULL OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
       THEN
          raise_Technical_Error(
             p_code => 'MI_0606_INVALID_MESSAGE_UUID',
-            p_info => 'DOCUMENT_SUBMITTED message UUID must be valid'
+            p_info => 'DOCUMENT_SUBMITTED message UUID must be valid',
+            p_details 
+                   => 'Ошибочное значение p_message_uuid ' || nvl(p_message_uuid,'<null>') || '. Ожидается UUID'
          );
       END IF;
-
 
       IF p_doc_key IS NULL OR NOT MI_Utils.is_Uuid(TRIM(p_doc_key))
       THEN
          raise_Technical_Error(
             p_code => 'MI_0606_INVALID_DOC_KEY',
-            p_info => 'DOCUMENT_SUBMITTED docKey must be valid'
+            p_info => 'DOCUMENT_SUBMITTED docKey must be valid',
+            p_details 
+                   => 'Ошибочное значение p_doc_key ' || nvl(p_message_uuid,'<null>') || '. Ожидается UUID'
          );
       END IF;
-
 
       IF p_response_time IS NULL THEN 
          raise_Technical_Error(
@@ -1174,18 +1058,17 @@ IS
          );
       END IF;
 
-
       l_status := UPPER(TRIM(p_status));
-
 
       IF l_status IS NULL OR l_status NOT IN ( 'SUCCESS', 'ERROR', 'VALIDATION_ERROR' )
       THEN
          raise_Technical_Error(
             p_code => 'MI_0606_UNSUPPORTED_SUBMITTED_STATUS',
-            p_info => 'Unsupported DOCUMENT_SUBMITTED.status=' || NVL(l_status, '<NULL>')
+            p_info => 'Unsupported DOCUMENT_SUBMITTED.status=' || NVL(p_status, '<NULL>'),
+            p_details 
+                   => 'Ошибочное значение status ' || nvl(p_status,'<null>') || '. Ожидается: SUCCESS, ERROR, VALIDATION_ERROR'
          );
       END IF;
-
 
       DCL.SavePoint(l_savepoint);
 
@@ -1195,7 +1078,6 @@ IS
             p_info => 'DCL did not create the DOCUMENT_SUBMITTED savepoint'
          );
       END IF;
-
 
       BEGIN
       
@@ -1221,7 +1103,6 @@ IS
             RETURN;
       END;
 
-
       l_log.context(
          p_inf_id         => cInfId,
          p_req_id         => p_req_id,
@@ -1229,9 +1110,10 @@ IS
          p_correlation_id => l_correlation_id
       );
 
-
       -- SUCCESS является промежуточным ACK.
-      IF l_status = 'SUCCESS' THEN IF l_status_cd = MI_Request_Api.STATUS_SENT THEN
+      IF l_status = 'SUCCESS' THEN 
+         
+         IF l_status_cd = MI_Request_Api.STATUS_SENT THEN
 
             rollback_For_Result();
 
@@ -1247,7 +1129,6 @@ IS
             
          END IF;
 
-
          IF l_status_cd = MI_Request_Api.STATUS_DONE THEN
 
             rollback_For_Result();
@@ -1262,13 +1143,11 @@ IS
          rollback_For_Result();
 
          p_ret_code := RET_BAD_STATE;
-
          p_ret_info := 'Request must be SENT for DOCUMENT_SUBMITTED SUCCESS, actual=' || MI_Request_Api.status_Name(l_status_cd);
 
          RETURN;
          
       END IF;
-
 
       -- ERROR / VALIDATION_ERROR: текущий provisional terminal contract.
       apply_Terminal_Result(
@@ -1288,7 +1167,6 @@ IS
          p_ret_info      => p_ret_info
       );
 
-
       IF p_ret_code IS NULL OR p_ret_code <> RET_OK 
       THEN         
          rollback_For_Result();
@@ -1303,13 +1181,8 @@ IS
 
    EXCEPTION
       WHEN OTHERS THEN
-         l_rollback_ok :=
-            MI_Transaction.rollback_Savepoint(
-               p_name => l_savepoint,
-               p_log  => l_log
-            );
-
-         l_log.error(
+         l_rollback_ok := MI_Transaction.rollback_Savepoint( p_name => l_savepoint, p_log  => l_log  );
+         l_log.error (
             p_message_text => 'apply_Document_Submitted failed',
             p_action_code  => 'submitted',
             p_details_text => TO_CLOB( SQLERRM || CHR(10) || DBMS_UTILITY.format_error_backtrace || CHR(10) || 'own_rollback=' || MI_Utils.to_Char(l_rollback_ok) )
@@ -1350,11 +1223,10 @@ IS
 
       l_log             MI_Logger_T := g_log;
 
-
       PROCEDURE rollback_For_Result
       IS
       BEGIN
-         rollback_Or_Raise(
+         rollback_Or_Raise (
             p_name => l_savepoint,
             p_code => 'MI_0606_STATUS_ROLLBACK_FAILED',
             p_info => 'Не удалось завершить DOCUMENT_STATUS без изменений; требуется полный rollback транзакции'
@@ -1368,9 +1240,7 @@ IS
       p_ret_code := RET_FAIL;
       p_ret_info := NULL;
 
-
-      IF p_message_uuid IS NULL
-         OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
+      IF p_message_uuid IS NULL OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
       THEN
          raise_Technical_Error(
             p_code => 'MI_0606_INVALID_MESSAGE_UUID',
@@ -1429,6 +1299,7 @@ IS
 
 
       BEGIN
+         
          lock_By_Doc_Key(
             p_doc_key       => p_doc_key,
 
@@ -1449,14 +1320,12 @@ IS
             RETURN;
       END;
 
-
       l_log.context(
          p_inf_id         => cInfId,
          p_req_id         => p_req_id,
          p_itm_id         => p_itm_id,
          p_correlation_id => l_correlation_id
       );
-
 
       IF l_state = 'PROCESSED' THEN
          l_ires_code  := MI_Item_Result_Api.RESPONSE_OK;
@@ -1465,7 +1334,6 @@ IS
          l_ires_code  := MI_Item_Result_Api.RESPONSE_FAIL;
          l_error_code := l_state;
       END IF;
-
 
       apply_Terminal_Result(
          p_req_id        => p_req_id,
@@ -1489,7 +1357,6 @@ IS
          p_ret_info      => p_ret_info
       );
 
-
       IF p_ret_code IS NULL OR p_ret_code <> RET_OK THEN
          rollback_For_Result;
       ELSE
@@ -1500,30 +1367,31 @@ IS
          );
       END IF;
 
-
    EXCEPTION
       WHEN OTHERS THEN
+         
          l_rollback_ok :=
             MI_Transaction.rollback_Savepoint(
                p_name => l_savepoint,
                p_log  => l_log
             );
 
-         l_log.error(
+         l_log.error (
             p_message_text => 'apply_Document_Status failed',
             p_action_code  => 'document_status',
-            p_details_text =>
-               TO_CLOB(
-                     SQLERRM
-                  || CHR(10)
-                  || DBMS_UTILITY.format_error_backtrace
-                  || CHR(10)
-                  || 'own_rollback='
-                  || MI_Utils.to_Char(l_rollback_ok)
-               )
+            p_details_text => 
+                  TO_CLOB ( 
+                     SQLERRM 
+                     || CHR(10) 
+                     || DBMS_UTILITY.format_error_backtrace
+                     || CHR(10)
+                     || 'own_rollback='
+                     || MI_Utils.to_Char(l_rollback_ok)
+                  )
          );
 
          RAISE;
+         
    END apply_Document_Status;
 
 
@@ -1554,44 +1422,43 @@ IS
 
       l_log             MI_Logger_T := g_log;
 
-
       PROCEDURE rollback_For_Result
       IS
       BEGIN
          rollback_Or_Raise(
             p_name => l_savepoint,
             p_code => 'MI_0606_FAULT_ROLLBACK_FAILED',
-            p_info =>
-               'Не удалось завершить FAULT без изменений; '
-               || 'требуется полный rollback транзакции'
+            p_info => 'Не удалось завершить FAULT без изменений; требуется полный rollback транзакции'
          );
       END rollback_For_Result;
+      
    BEGIN
+      
       p_req_id   := NULL;
       p_itm_id   := NULL;
       p_ret_code := RET_FAIL;
       p_ret_info := NULL;
 
 
-      IF p_request_uuid IS NULL
-         OR NOT MI_Utils.is_Uuid(TRIM(p_request_uuid))
+      IF p_request_uuid IS NULL OR NOT MI_Utils.is_Uuid(TRIM(p_request_uuid))
       THEN
          raise_Technical_Error(
             p_code => 'MI_0606_INVALID_REQUEST_UUID',
-            p_info => 'FAULT request UUID must be valid'
+            p_info => 'FAULT request UUID must be valid',
+            p_details 
+                   => 'Ошибочное значение p_request_uuid ' || nvl(p_request_uuid,'<null>') || '. Ожидается UUID'
          );
       END IF;
 
-
-      IF p_message_uuid IS NULL
-         OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
+      IF p_message_uuid IS NULL OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
       THEN
          raise_Technical_Error(
             p_code => 'MI_0606_INVALID_MESSAGE_UUID',
-            p_info => 'FAULT message UUID must be valid'
+            p_info => 'FAULT message UUID must be valid',
+            p_details 
+                   => 'Ошибочное значение p_message_uuid ' || nvl(p_message_uuid,'<null>') || '. Ожидается UUID'
          );
       END IF;
-
 
       IF p_response_time IS NULL THEN
          raise_Technical_Error(
@@ -1600,10 +1467,7 @@ IS
          );
       END IF;
 
-
-      l_fault_code :=
-         UPPER(TRIM(p_fault_code));
-
+      l_fault_code := UPPER(TRIM(p_fault_code));
 
       IF l_fault_code IS NULL THEN
          raise_Technical_Error(
@@ -1611,7 +1475,6 @@ IS
             p_info => 'FAULT.faultCode must not be empty'
          );
       END IF;
-
 
       DCL.SavePoint(l_savepoint);
 
@@ -1622,8 +1485,8 @@ IS
          );
       END IF;
 
-
       BEGIN
+         
          lock_By_Request(
             p_request_uuid => p_request_uuid,
             p_doc_key      => NULL,
@@ -1637,7 +1500,8 @@ IS
 
       EXCEPTION
          WHEN NO_DATA_FOUND THEN
-            rollback_For_Result;
+         
+            rollback_For_Result();
 
             p_ret_code := RET_NO_DATA;
             p_ret_info := 'SEND_DOCUMENT request not found';
@@ -1645,14 +1509,12 @@ IS
             RETURN;
       END;
 
-
       l_log.context(
          p_inf_id         => cInfId,
          p_req_id         => p_req_id,
          p_itm_id         => p_itm_id,
          p_correlation_id => l_correlation_id
       );
-
 
       apply_Terminal_Result(
          p_req_id        => p_req_id,
@@ -1676,9 +1538,8 @@ IS
          p_ret_info      => p_ret_info
       );
 
-
       IF p_ret_code IS NULL OR p_ret_code <> RET_OK THEN
-         rollback_For_Result;
+         rollback_For_Result();
       ELSE
          l_log.info(
             p_message_text => 'FAULT applied',
@@ -1706,7 +1567,7 @@ IS
    END apply_Fault;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE create_Request_Impl (
       p_source    IN  source_Row_t,
 
@@ -1740,9 +1601,7 @@ IS
       p_ret_info := NULL;
 
 
-      ------------------------------------------------------------------------
       -- Expected source-data failures должны определяться ДО первого DML.
-      ------------------------------------------------------------------------
       IF p_source.id IS NULL THEN
          raise_Technical_Error(
             p_code => 'MI_0606_SOURCE_ID_MISSING',
@@ -1750,26 +1609,19 @@ IS
          );
       END IF;
 
-
-      IF p_source.rec_state IS NULL
-         OR TRIM(p_source.rec_state) <> '0'
+      IF p_source.rec_state IS NULL OR TRIM(p_source.rec_state) <> '0'
       THEN
-         p_ret_code := RET_BAD_STATE;
 
-         p_ret_info :=
-               'RSD_OUTFILES has invalid REC_STATE='
-            || NVL(TRIM(p_source.rec_state), '<NULL>')
-            || ', expected 0; id='
-            || p_source.id;
+         p_ret_code := RET_BAD_STATE;
+         p_ret_info := 'RSD_OUTFILES has invalid REC_STATE=' || NVL(TRIM(p_source.rec_state), '<NULL>') || ', expected 0; id=' || p_source.id;
 
          RETURN;
+         
       END IF;
-
 
       l_file_name := TRIM(p_source.file_name);
       l_task_id   := TRIM(p_source.task_id);
       l_doc_key   := TRIM(p_source.doc_key);
-
 
       IF l_file_name IS NULL THEN
          p_ret_code := RET_FAIL;
@@ -1777,107 +1629,67 @@ IS
          RETURN;
       END IF;
 
-
-      IF l_task_id IS NULL
-         OR NOT MI_Utils.is_Uuid(l_task_id)
+      IF l_task_id IS NULL OR NOT MI_Utils.is_Uuid(l_task_id)
       THEN
          p_ret_code := RET_FAIL;
-
-         p_ret_info :=
-               'RSD_OUTFILES.TASKID must be UUID: '
-            || NVL(l_task_id, '<NULL>')
-            || '; id='
-            || p_source.id;
-
+         p_ret_info := 'RSD_OUTFILES.TASKID must be UUID: ' || NVL(l_task_id, '<NULL>') || '; id=' || p_source.id;
+         
          RETURN;
+         
       END IF;
 
-
-      IF l_doc_key IS NULL
-         OR NOT MI_Utils.is_Uuid(l_doc_key)
+      IF l_doc_key IS NULL OR NOT MI_Utils.is_Uuid(l_doc_key)
       THEN
          p_ret_code := RET_FAIL;
-
-         p_ret_info :=
-               'RSD_OUTFILES.DOCKEY must be UUID: '
-            || NVL(l_doc_key, '<NULL>')
-            || '; id='
-            || p_source.id;
+         p_ret_info := 'RSD_OUTFILES.DOCKEY must be UUID: ' || NVL(l_doc_key, '<NULL>') || '; id=' || p_source.id;
 
          RETURN;
+         
       END IF;
 
-
-      ------------------------------------------------------------------------
       -- Business mapping RSD -> SEND_DOCUMENT.
-      ------------------------------------------------------------------------
-      l_doc_type :=
-         map_Doc_Type(p_source.file_type);
+      /*
+      l_doc_type  := map_Doc_Type(p_source.file_type);
+      l_error_code:= map_Error_Code(p_source.file_type);
 
-      l_error_code :=
-         map_Error_Code(p_source.file_type);
-
-
-      IF l_doc_type IS NULL
-         AND l_error_code IS NULL
+      IF l_doc_type IS NULL AND l_error_code IS NULL
       THEN
          p_ret_code := RET_UNSUPPORTED_FILE_TYPE;
-
-         p_ret_info :=
-               'Unsupported RSD_OUTFILES.FILE_TYPE='
-            || NVL(TRIM(p_source.file_type), '<NULL>')
-            || '; id='
-            || p_source.id;
-
+         p_ret_info := 'Unsupported RSD_OUTFILES.FILE_TYPE=' || NVL(TRIM(p_source.file_type), '<NULL>') || '; id=' || p_source.id;
+         
          RETURN;
+         
       END IF;
 
 
-      /*
+      *
          Пока journal умеет без повторного чтения mutable RSD_OUTFILES
          воспроизвести только подтверждённый PB2 mapping.
-      */
-      IF l_doc_type IS NULL
-         OR l_doc_type <> cDocTypePb2
-         OR l_error_code IS NOT NULL
+      
+      IF l_doc_type IS NULL OR l_doc_type <> cDocTypePb2 OR l_error_code IS NOT NULL
       THEN
          p_ret_code := RET_UNSUPPORTED_FILE_TYPE;
-
-         p_ret_info :=
-               'FILE_TYPE mapping has no durable MI journal snapshot'
-            || '; id='
-            || p_source.id;
+         p_ret_info := 'FILE_TYPE mapping has no durable MI journal snapshot; id=' || p_source.id;
 
          RETURN;
+         
       END IF;
+      */
 
-
-      ------------------------------------------------------------------------
       -- Payload snapshot.
-      ------------------------------------------------------------------------
-      IF p_source.file_body IS NOT NULL
-         AND DBMS_LOB.getlength(p_source.file_body) > 0
+      IF p_source.file_body IS NOT NULL AND DBMS_LOB.getlength(p_source.file_body) > 0
       THEN
-         l_payload :=
-            clob_To_Utf8_Blob(p_source.file_body);
-
+         l_payload      := clob_To_Utf8_Blob(p_source.file_body);
          l_payload_temp := TRUE;
-
       ELSE
          p_ret_code := RET_FAIL;
-
-         p_ret_info :=
-               'RSD_OUTFILES.FILEBODY is empty; id='
-            || p_source.id;
+         p_ret_info := 'RSD_OUTFILES.FILEBODY is empty; id=' || p_source.id;
 
          RETURN;
       END IF;
 
-
-      ------------------------------------------------------------------------
       -- Всё ниже является единым durable DML.
       -- Ошибка здесь уже technical и должна RAISE.
-      ------------------------------------------------------------------------
       l_request_result :=
          MI_Request_Api.create_Request(
             p_inf_id     => cInfId,
@@ -1886,37 +1698,32 @@ IS
          );
 
 
-      IF MI_ResultCtx.is_Failed(l_request_result) THEN
-         MI_ResultCtx.raise_Error(
+      IF MI_ResultCtx.is_Failed(l_request_result)  THEN
+
+         MI_ResultCtx.raise_Error (
             MI_ResultCtx.wrap_Exception(
                p_cause => l_request_result,
                p_code  => 'MI_0606_REQUEST_HEADER_FAILED',
                p_info  => 'Не удалось создать MI_REQ для SEND_DOCUMENT'
             )
          );
+         
       END IF;
 
-
-      p_req_id :=
-         TO_NUMBER(
-            l_request_result.parameters('req_id')
-         );
-
-      l_correlation_id :=
-         l_request_result.parameters('correlation_id');
-
+      p_req_id         := TO_NUMBER( l_request_result.parameters('req_id') );
+      l_correlation_id := l_request_result.parameters('correlation_id');
 
       IF p_req_id IS NULL THEN
-         raise_Technical_Error(
+         raise_Technical_Error (
             p_code => 'MI_0606_REQUEST_ID_MISSING',
             p_info => 'MI_Request_Api.create_Request returned NULL req_id'
          );
+         
       END IF;
 
+      l_log.context( p_req_id => p_req_id, p_inf_Id => cInfId, p_correlation_id => l_correlation_id );
 
-      l_journal_name :=
-         journal_Name(p_source.id);
-
+      l_journal_name := journal_Name(p_source.id);
 
       /*
          DOCKEY является business identity SEND_DOCUMENT.
@@ -1947,7 +1754,6 @@ IS
       RETURNING ITM_ID
            INTO p_itm_id;
 
-
       INSERT INTO MI_0600_F (
          ITM_ID,
          CZIP_FILE_NAME
@@ -1957,59 +1763,33 @@ IS
          l_file_name
       );
 
-
-      ------------------------------------------------------------------------
       -- Source становится captured только после создания полного MI journal.
-      ------------------------------------------------------------------------
       UPDATE RSD_OUTFILES
          SET REC_STATE = '2'
        WHERE ID = p_source.id
-         AND REC_STATE = '0';
+         AND 
+             REC_STATE = '0';
 
 
       IF SQL%ROWCOUNT <> 1 THEN
          raise_Technical_Error(
             p_code => 'MI_0606_SOURCE_STATE_NOT_UPDATED',
-            p_info =>
-                  'RSD_OUTFILES state update failed: id='
-               || p_source.id
-               || ', rows='
-               || SQL%ROWCOUNT
+            p_info => 'RSD_OUTFILES state update failed: id=' || p_source.id || ', rows=' || SQL%ROWCOUNT
          );
       END IF;
-
 
       p_ret_code := RET_OK;
       p_ret_info := 'SEND_DOCUMENT request created';
 
-
-      l_log.context(
-         p_inf_id         => cInfId,
-         p_req_id         => p_req_id,
-         p_itm_id         => p_itm_id,
-         p_correlation_id => l_correlation_id
-      );
-
-
       l_log.info(
          p_message_text => 'SEND_DOCUMENT request created',
          p_action_code  => 'create',
-         p_details_text =>
-            TO_CLOB(
-                  'RSD_OUTFILES.id='
-               || p_source.id
-               || ', docKey='
-               || l_doc_key
-               || ', fileType='
-               || p_source.file_type
-            )
+         p_details_text => TO_CLOB( 'RSD_OUTFILES.id=' || p_source.id || ', docKey=' || l_doc_key || ', fileType=' || p_source.file_type )
       );
-
 
       IF l_payload_temp THEN
          free_Temporary_Blob(l_payload);
       END IF;
-
 
    EXCEPTION
       WHEN OTHERS THEN
@@ -2021,7 +1801,7 @@ IS
    END create_Request_Impl;
 
 
-      ---------------------------------------------------------------------------
+   /* */
    PROCEDURE create_Request (
       p_outfile_id  IN  RSD_OUTFILES.ID%TYPE,
 
@@ -2065,10 +1845,8 @@ IS
       END IF;
 
 
-      ------------------------------------------------------------------------
-      -- Direct/manual call waits for the requested source row.
-      ------------------------------------------------------------------------
       BEGIN
+         
          SELECT ID,
                 FILE_TYPE,
                 FILENAME,
@@ -2096,40 +1874,34 @@ IS
             );
 
             p_ret_code := RET_NO_DATA;
-            p_ret_info :=
-               'RSD_OUTFILES row not found: id='
-               || p_outfile_id;
+            p_ret_info := 'RSD_OUTFILES row not found: id=' || p_outfile_id;
 
             RETURN;
       END;
 
 
-      ------------------------------------------------------------------------
-      -- The source row is locked before replay classification. This prevents
-      -- a REC_STATE=0 row with an existing journal from being silently
-      -- accepted as an ordinary replay.
-      ------------------------------------------------------------------------
-      IF find_Existing_Source(
+      -- Исходная строка блокируется перед классификацией повтора. Это предотвращает
+      -- случайное принятие строки с REC_STATE=0 и существующим журналом
+      -- в качестве обычного повтора.
+      IF find_Existing_Source (
             p_outfile_id => p_outfile_id,
             p_req_id     => l_existing_req,
             p_itm_id     => l_existing_itm
          )
       THEN
-         IF l_source.rec_state IS NULL
-            OR TRIM(l_source.rec_state) NOT IN ('2', '5')
+         IF l_source.rec_state IS NULL OR TRIM(l_source.rec_state) NOT IN ('2', '5')
          THEN
             raise_Technical_Error(
                p_code => 'MI_0606_SOURCE_JOURNAL_INCONSISTENT',
-               p_info =>
-                     'MI journal exists for source with invalid REC_STATE'
-                  || '; outfile_id='
-                  || p_outfile_id
-                  || '; rec_state='
-                  || NVL(TRIM(l_source.rec_state), '<NULL>')
-                  || '; req_id='
-                  || l_existing_req
-                  || '; itm_id='
-                  || l_existing_itm
+               p_info => 'MI journal exists for source with invalid REC_STATE'
+                         || '; outfile_id='
+                         || p_outfile_id
+                         || '; rec_state='
+                         || NVL(TRIM(l_source.rec_state), '<NULL>')
+                         || '; req_id='
+                         || l_existing_req
+                         || '; itm_id='
+                         || l_existing_itm
             );
          END IF;
 
@@ -2159,15 +1931,13 @@ IS
       IF TRIM(l_source.rec_state) IN ('2', '5') THEN
          raise_Technical_Error(
             p_code => 'MI_0606_SOURCE_JOURNAL_INCONSISTENT',
-            p_info =>
-                  'Captured/completed source has no MI journal'
-               || '; outfile_id='
-               || p_outfile_id
-               || '; rec_state='
-               || TRIM(l_source.rec_state)
+            p_info => 'Captured/completed source has no MI journal'
+                      || '; outfile_id='
+                      || p_outfile_id
+                      || '; rec_state='
+                      || TRIM(l_source.rec_state)
          );
       END IF;
-
 
       create_Request_Impl(
          p_source   => l_source,
@@ -2178,7 +1948,6 @@ IS
          p_ret_code => p_ret_code,
          p_ret_info => p_ret_info
       );
-
 
       /*
          Expected source rejection не должен оставлять даже случайных
@@ -2203,12 +1972,10 @@ IS
                p_log  => g_log
             );
 
-
          g_log.error(
             p_message_text => 'create_Request failed',
             p_action_code  => 'create',
-            p_details_text =>
-               TO_CLOB(
+            p_details_text => TO_CLOB(
                      l_sqlerrm
                   || CHR(10)
                   || DBMS_UTILITY.format_error_backtrace
@@ -2218,12 +1985,12 @@ IS
                )
          );
 
-
          RAISE;
+         
    END create_Request;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE capture_Pending (
       p_captured_count  OUT PLS_INTEGER,
       p_skipped_count   OUT PLS_INTEGER,
@@ -2256,9 +2023,6 @@ IS
 
 
       /*
-         Не используем row limiting clause вместе с FOR UPDATE:
-         Oracle 12.1 имеет ограничения на такую комбинацию.
-
          Cursor идёт по pending rows в ID order.
          CAPTURE_SCAN_MAX ограничивает реальное число FETCH.
       */
@@ -2274,26 +2038,23 @@ IS
            FROM RSD_OUTFILES
           WHERE REC_STATE = '0'
           ORDER BY ID
-            FOR UPDATE SKIP LOCKED;
-
-
+            FOR 
+                UPDATE SKIP LOCKED;
    BEGIN
+      
       p_captured_count := 0;
       p_skipped_count  := 0;
       p_ret_code       := RET_FAIL;
       p_ret_info       := NULL;
 
-
-      ------------------------------------------------------------------------
       -- Вся operational configuration находится в БД.
-      ------------------------------------------------------------------------
       IF NOT capture_Enabled THEN
          p_ret_code := RET_OK;
          p_ret_info := 'MI_0606 capture disabled';
-
+         
          RETURN;
+         
       END IF;
-
 
       l_max_count :=
          capture_Int_Property(
@@ -2302,7 +2063,6 @@ IS
             p_min_value     => 1,
             p_max_value     => 1000
          );
-
 
       l_scan_max :=
          capture_Int_Property(

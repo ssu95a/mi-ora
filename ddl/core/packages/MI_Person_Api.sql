@@ -1,19 +1,16 @@
 CREATE OR REPLACE PACKAGE MI_Person_Api
 IS
 
-   VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.0.2} {19.11.2026} Sulimoff$';
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.3} {26.11.2026} Sulimoff$';
 
-
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2;
-
 
    /*
       Возвращает полную запись person.
 
-      Если person не существует, функция сохраняет стандартную Oracle
-      семантику SELECT INTO и бросает NO_DATA_FOUND.
+      Если person не существует, бросает NO_DATA_FOUND.
    */
    FUNCTION get_Person (
       p_person_id IN MI_PERSON.PERSON_ID%TYPE
@@ -88,7 +85,6 @@ IS
 
 END MI_Person_Api;
 /
-
 CREATE OR REPLACE PACKAGE BODY MI_Person_Api
 IS
 
@@ -100,18 +96,12 @@ IS
 
 
    /*
-      Package-level constant хранит стабильную идентичность пакета.
-      Простые вызовы без operation context идут напрямую через g_log.
-      Локальная value-copy нужна только когда требуется context().
+      Глобальный логгер
    */
-   g_log CONSTANT MI_Logger_T :=
-      MI_Logger_T(
-         p_logger_name  => cLogger,
-         p_package_name => $$PLSQL_UNIT
-      );
+   g_log CONSTANT MI_Logger_T := MI_Logger_T( p_logger_name  => cLogger, p_package_name => $$PLSQL_UNIT );
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2
    IS
@@ -120,7 +110,7 @@ IS
    END get_Version;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION exists_Inf (
       p_inf_id IN MI_INF.INF_ID%TYPE
    )
@@ -141,7 +131,7 @@ IS
    END exists_Inf;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION success_Result (
       p_code       IN VARCHAR2,
       p_info       IN VARCHAR2,
@@ -154,8 +144,8 @@ IS
    IS
       l_result MI_ResultCtx.exec_Result_t;
    BEGIN
-      l_result :=
-         MI_ResultCtx.success(
+      
+      l_result := MI_ResultCtx.success(
             p_code => p_code,
             p_info => p_info
          );
@@ -177,10 +167,11 @@ IS
       END IF;
 
       RETURN l_result;
+      
    END success_Result;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION failure_Result (
       p_code     IN VARCHAR2,
       p_info     IN VARCHAR2,
@@ -191,8 +182,7 @@ IS
    IS
       l_result MI_ResultCtx.exec_Result_t;
    BEGIN
-      l_result :=
-         MI_ResultCtx.failure(
+      l_result := MI_ResultCtx.failure (
             p_code => p_code,
             p_info => p_info
          );
@@ -206,10 +196,11 @@ IS
       END IF;
 
       RETURN l_result;
+      
    END failure_Result;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION normalized_Json (
       p_person_json IN CLOB
    )
@@ -221,10 +212,11 @@ IS
       END IF;
 
       RETURN p_person_json;
+      
    END normalized_Json;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION is_Json_Object (
       p_person_json IN CLOB
    )
@@ -247,11 +239,12 @@ IS
       l_prefix := DBMS_LOB.SUBSTR(p_person_json, 4000, 1);
 
       RETURN REGEXP_LIKE(l_prefix, '^[[:space:]]*[{]');
+      
    END is_Json_Object;
 
 
-   ---------------------------------------------------------------------------
-   FUNCTION json_Has_Icusnum (
+   /* */
+   FUNCTION json_Has_iCusNum (
       p_person_json IN CLOB
    )
       RETURN BOOLEAN
@@ -266,10 +259,10 @@ IS
         FROM DUAL;
 
       RETURN l_exists = 1;
-   END json_Has_Icusnum;
+   END json_Has_iCusNum;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION parse_Number (
       p_value       IN VARCHAR2,
       p_field_name  IN VARCHAR2
@@ -297,18 +290,11 @@ IS
 
    EXCEPTION
       WHEN OTHERS THEN
-         RAISE_APPLICATION_ERROR(
-            -20010,
-            'Invalid numeric JSON field '
-            || p_field_name
-            || ': '
-            || SUBSTR(p_value, 1, 100),
-            TRUE
-         );
+         RAISE_APPLICATION_ERROR( -20010, 'Invalid numeric JSON field ' || p_field_name || ': ' || SUBSTR(p_value, 1, 100), TRUE );
    END parse_Number;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION parse_Date (
       p_value       IN VARCHAR2,
       p_field_name  IN VARCHAR2
@@ -324,19 +310,11 @@ IS
 
    EXCEPTION
       WHEN OTHERS THEN
-         RAISE_APPLICATION_ERROR(
-            -20011,
-            'Invalid date JSON field '
-            || p_field_name
-            || ': '
-            || SUBSTR(p_value, 1, 100)
-            || ', expected YYYY-MM-DD',
-            TRUE
-         );
+         RAISE_APPLICATION_ERROR( -20011, 'Invalid date JSON field ' || p_field_name || ': ' || SUBSTR(p_value, 1, 100) || ', expected YYYY-MM-DD', TRUE );
    END parse_Date;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION json_Build_Person (
       p_person_json IN CLOB
    )
@@ -435,7 +413,6 @@ IS
              l_person.coid
         FROM DUAL;
 
-
       l_person.icusnum          := parse_Number(l_icusnum, 'icusnum');
       l_person.gender_id        := parse_Number(l_gender_id, 'gender_id');
       l_person.ctzn_type_id     := parse_Number(l_ctzn_type_id, 'ctzn_type_id');
@@ -448,10 +425,11 @@ IS
       l_person.death_date       := parse_Date(l_death_date, 'death_date');
 
       RETURN l_person;
+      
    END json_Build_Person;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION find_By_Snils (
       p_inf_id  IN MI_INF.INF_ID%TYPE,
       p_snils   IN MI_PERSON.SNILS%TYPE,
@@ -496,7 +474,7 @@ IS
    END find_By_Snils;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION find_By_Document (
       p_inf_id  IN MI_INF.INF_ID%TYPE,
       p_person  IN MI_PERSON%ROWTYPE,
@@ -547,7 +525,7 @@ IS
    END find_By_Document;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION find_Person_Id (
       p_inf_id  IN MI_INF.INF_ID%TYPE,
       p_person  IN MI_PERSON%ROWTYPE,
@@ -560,6 +538,7 @@ IS
       p_profile := NULL;
 
       IF p_inf_id = cInf_Snils THEN
+         
          p_profile := 'snils';
 
          IF p_person.snils IS NULL THEN
@@ -587,6 +566,7 @@ IS
 
 
       IF p_inf_id IN (cInf_Doc_1, cInf_Doc_2) THEN
+
          p_profile := 'document';
 
          IF p_person.doc_type_id IS NULL
@@ -623,7 +603,7 @@ IS
    END find_Person_Id;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION insert_Person (
       p_person IN MI_PERSON%ROWTYPE
    )
@@ -720,7 +700,7 @@ IS
    END insert_Person;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE link_Person_To_Inf (
       p_person_id  IN MI_PERSON.PERSON_ID%TYPE,
       p_inf_id     IN MI_INF.INF_ID%TYPE,
@@ -753,8 +733,8 @@ IS
    END link_Person_To_Inf;
 
 
-   ---------------------------------------------------------------------------
-   FUNCTION get_Or_Create_Core (
+   /* */
+   FUNCTION get_Or_Create_Impl (
       p_inf_id                    IN MI_INF.INF_ID%TYPE,
       p_default_icusnum           IN MI_PERSON.ICUSNUM%TYPE,
       p_use_default_when_absent   IN BOOLEAN,
@@ -820,7 +800,7 @@ IS
          l_person := json_Build_Person(l_json);
 
          IF p_use_default_when_absent
-            AND NOT json_Has_Icusnum(l_json)
+            AND NOT json_Has_iCusNum(l_json)
          THEN
             l_person.icusnum := p_default_icusnum;
          END IF;
@@ -989,10 +969,10 @@ IS
          END IF;
 
          RETURN l_result;
-   END get_Or_Create_Core;
+   END get_Or_Create_Impl;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Person (
       p_person_id IN MI_PERSON.PERSON_ID%TYPE
    )
@@ -1009,7 +989,7 @@ IS
    END get_Person;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Last_Person_Id (
       p_icusnum IN MI_PERSON.ICUSNUM%TYPE,
       p_inf_id  IN MI_INF.INF_ID%TYPE DEFAULT NULL
@@ -1050,7 +1030,7 @@ IS
    END get_Last_Person_Id;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Or_Create (
       p_inf_id      IN MI_INF.INF_ID%TYPE,
       p_person_json IN CLOB
@@ -1059,7 +1039,7 @@ IS
    IS
    BEGIN
       RETURN
-         get_Or_Create_Core(
+         get_Or_Create_Impl(
             p_inf_id                  => p_inf_id,
             p_default_icusnum         => NULL,
             p_use_default_when_absent => FALSE,
@@ -1068,7 +1048,7 @@ IS
    END get_Or_Create;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Or_Create (
       p_inf_id      IN MI_INF.INF_ID%TYPE,
       p_icusnum     IN MI_PERSON.ICUSNUM%TYPE,
@@ -1078,7 +1058,7 @@ IS
    IS
    BEGIN
       RETURN
-         get_Or_Create_Core(
+         get_Or_Create_Impl(
             p_inf_id                  => p_inf_id,
             p_default_icusnum         => p_icusnum,
             p_use_default_when_absent => TRUE,
