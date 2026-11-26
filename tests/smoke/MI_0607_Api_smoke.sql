@@ -25,6 +25,7 @@ DECLARE
    l_base_id            RSD_BASES.ID%TYPE;
    l_file_type          RSD_BASES.FILE_TYPE%TYPE;
    l_parse_result       NUMBER;
+   l_outfile_id         RSD_OUTFILES.ID%TYPE;
 
    l_ret_code           NUMBER;
    l_ret_info           VARCHAR2(4000);
@@ -77,6 +78,7 @@ DECLARE
       l_base_id      := -1;
       l_file_type    := 'X';
       l_parse_result := -1;
+      l_outfile_id   := -1;
       l_ret_code     := NULL;
       l_ret_info     := NULL;
 
@@ -95,7 +97,9 @@ DECLARE
          p_file_type         => l_file_type,
          p_parse_result      => l_parse_result,
          p_ret_code          => l_ret_code,
-         p_ret_info          => l_ret_info
+         p_ret_info          => l_ret_info,
+         p_inf_id            => 607,
+         p_outfile_id        => l_outfile_id
       );
 
       assert_True(
@@ -114,7 +118,8 @@ DECLARE
          AND l_itm_id IS NULL
          AND l_base_id IS NULL
          AND l_file_type IS NULL
-         AND l_parse_result IS NULL,
+         AND l_parse_result IS NULL
+         AND l_outfile_id IS NULL,
          'duplicate exposed identifiers or business result'
       );
    END call_Duplicate;
@@ -169,7 +174,9 @@ BEGIN
          p_file_type         => l_file_type,
          p_parse_result      => l_parse_result,
          p_ret_code          => l_ret_code,
-         p_ret_info          => l_ret_info
+         p_ret_info          => l_ret_info,
+         p_inf_id            => 607,
+         p_outfile_id        => l_outfile_id
       );
 
       fail('NULL original_request_uuid was accepted');

@@ -1,8 +1,7 @@
 CREATE OR REPLACE PACKAGE MI_Item_Result_Api
 IS
 
-   VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.0.2} {19.11.2026} Sulimoff$';
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.3} {26.11.2026} Sulimoff$';
 
 
    /*
@@ -23,7 +22,7 @@ IS
    RET_ALREADY_APPLIED CONSTANT PLS_INTEGER :=  1;
    RET_OTHER_APPLIED   CONSTANT PLS_INTEGER :=  2;
 
-
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2;
 
@@ -96,7 +95,6 @@ IS
 
 END MI_Item_Result_Api;
 /
-
 CREATE OR REPLACE PACKAGE BODY MI_Item_Result_Api
 IS
 
@@ -114,8 +112,7 @@ IS
          p_package_name => $$PLSQL_UNIT
       );
 
-
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2
    IS
@@ -124,7 +121,7 @@ IS
    END get_Version;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION mapper_Name (
       p_value IN VARCHAR2
    )
@@ -142,10 +139,9 @@ IS
          OR l_dot_pos = LENGTH(l_value)
          OR INSTR(l_value, '.', l_dot_pos + 1) > 0
       THEN
-         RAISE_APPLICATION_ERROR(
+         RAISE_APPLICATION_ERROR (
             -20011,
-            'Invalid payload mapper, expected PACKAGE.PROCEDURE: '
-            || NVL(p_value, '<NULL>')
+            'Invalid payload mapper, expected PACKAGE.PROCEDURE: ' || NVL(p_value, '<NULL>' )
          );
       END IF;
 
@@ -162,10 +158,11 @@ IS
          );
 
       RETURN l_package || '.' || l_procedure;
+      
    END mapper_Name;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION success_Result (
       p_code               IN VARCHAR2,
       p_info               IN VARCHAR2,
@@ -183,11 +180,10 @@ IS
    IS
       l_result MI_ResultCtx.exec_Result_t;
    BEGIN
-      l_result :=
-         MI_ResultCtx.success(
-            p_code => p_code,
-            p_info => p_info
-         );
+      l_result := MI_ResultCtx.success (
+         p_code => p_code,
+         p_info => p_info
+      );
 
       l_result.parameters('ret_code') := TO_CHAR(p_ret_code);
 
@@ -208,20 +204,19 @@ IS
       END IF;
 
       IF p_idempotent IS NOT NULL THEN
-         l_result.parameters('idempotent') :=
-            MI_Utils.to_Char(p_idempotent);
+         l_result.parameters('idempotent') := MI_Utils.to_Char(p_idempotent);
       END IF;
 
       IF p_request_completed IS NOT NULL THEN
-         l_result.parameters('request_completed') :=
-            MI_Utils.to_Char(p_request_completed);
+         l_result.parameters('request_completed') := MI_Utils.to_Char(p_request_completed);
       END IF;
 
       RETURN l_result;
+      
    END success_Result;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION failure_Result (
       p_code       IN VARCHAR2,
       p_info       IN VARCHAR2,
@@ -238,12 +233,12 @@ IS
    IS
       l_result MI_ResultCtx.exec_Result_t;
    BEGIN
-      l_result :=
-         MI_ResultCtx.failure(
-            p_code    => p_code,
-            p_info    => p_info,
-            p_details => p_details
-         );
+      
+      l_result := MI_ResultCtx.failure(
+         p_code    => p_code,
+         p_info    => p_info,
+         p_details => p_details
+      );
 
       l_result.parameters('ret_code') := TO_CHAR(p_ret_code);
 
@@ -264,10 +259,11 @@ IS
       END IF;
 
       RETURN l_result;
+      
    END failure_Result;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION apply_Item_Result (
       p_item_table        IN VARCHAR2,
       p_payload_mapper    IN VARCHAR2,
@@ -321,8 +317,7 @@ IS
       l_log                MI_Logger_T := g_log;
 
 
-      ------------------------------------------------------------------------
-      PROCEDURE add_Context (
+      PROCEDURE put_Context (
          p_result IN OUT NOCOPY MI_ResultCtx.exec_Result_t
       )
       IS
@@ -344,10 +339,9 @@ IS
          IF l_status_cd IS NOT NULL THEN
             p_result.parameters('status_cd') := TO_CHAR(l_status_cd);
          END IF;
-      END add_Context;
+      END put_Context;
 
 
-      ------------------------------------------------------------------------
       PROCEDURE try_Complete_Request
       IS
          l_transition_result MI_ResultCtx.exec_Result_t;
@@ -362,10 +356,9 @@ IS
 
          EXECUTE IMMEDIATE l_sql
             INTO l_pending_count
-            USING l_req_id;
+           USING l_req_id;
 
-         IF l_pending_count > 0
-            AND l_status_cd = MI_Request_Api.STATUS_DONE
+         IF l_pending_count > 0 AND l_status_cd = MI_Request_Api.STATUS_DONE
          THEN
             l_transition_result :=
                failure_Result(
@@ -378,23 +371,25 @@ IS
                );
 
             MI_ResultCtx.raise_Error(l_transition_result);
+            
          END IF;
 
-         IF l_pending_count = 0
-            AND l_status_cd = MI_Request_Api.STATUS_SENT
+         IF l_pending_count = 0 AND l_status_cd = MI_Request_Api.STATUS_SENT
          THEN
-            l_transition_result :=
-               MI_Request_Api.to_Success(l_req_id);
+            
+            l_transition_result := MI_Request_Api.to_Success(l_req_id);
 
             IF MI_ResultCtx.is_Failed(l_transition_result) THEN
+               
                l_transition_result :=
-                  MI_ResultCtx.wrap_Exception(
+                  MI_ResultCtx.wrap_Exception (
                      p_cause => l_transition_result,
                      p_code  => 'ITEM_RESULT_REQUEST_COMPLETE_FAILED',
                      p_info  => 'Не удалось завершить request после обработки items'
                   );
 
                MI_ResultCtx.raise_Error(l_transition_result);
+               
             END IF;
 
             l_request_completed := TRUE;
@@ -405,25 +400,22 @@ IS
                p_action_code  => 'complete_request'
             );
          END IF;
+         
       END try_Complete_Request;
 
-
    BEGIN
-      ------------------------------------------------------------------------
+
       -- Validate scalar input before any lock or DML.
-      ------------------------------------------------------------------------
-      IF p_request_uuid IS NULL
-         OR NOT MI_Utils.is_Uuid(p_request_uuid)
+      IF p_request_uuid IS NULL OR NOT MI_Utils.is_Uuid(p_request_uuid)
       THEN
          RETURN
-            failure_Result(
+            failure_Result (
                p_code => 'ITEM_RESULT_INVALID_REQUEST_UUID',
                p_info => 'p_request_uuid must be a valid UUID'
             );
       END IF;
 
-      IF p_message_uuid IS NULL
-         OR NOT MI_Utils.is_Uuid(p_message_uuid)
+      IF p_message_uuid IS NULL OR NOT MI_Utils.is_Uuid(p_message_uuid)
       THEN
          RETURN
             failure_Result(
@@ -432,8 +424,7 @@ IS
             );
       END IF;
 
-      IF p_item_uuid IS NULL
-         OR NOT MI_Utils.is_Uuid(p_item_uuid)
+      IF p_item_uuid IS NULL OR NOT MI_Utils.is_Uuid(p_item_uuid)
       THEN
          RETURN
             failure_Result(
@@ -442,8 +433,7 @@ IS
             );
       END IF;
 
-      IF p_response_kind IS NULL
-         OR p_response_kind NOT IN (RESPONSE_OK, RESPONSE_FAIL)
+      IF p_response_kind IS NULL OR p_response_kind NOT IN (RESPONSE_OK, RESPONSE_FAIL)
       THEN
          RETURN
             failure_Result(
@@ -462,24 +452,13 @@ IS
             );
       END IF;
 
-
-      l_payload_type :=
-         LOWER(
-            NVL(
-               NULLIF(TRIM(p_payload_type), ''),
-               'json'
-            )
-         );
+      l_payload_type := LOWER( NVL( NULLIF(TRIM(p_payload_type), ''), 'json' ) );
 
       IF l_payload_type NOT IN ('json', 'xml', 'text') THEN
          RETURN
             failure_Result(
                p_code => 'ITEM_RESULT_INVALID_PAYLOAD_TYPE',
-               p_info =>
-                  'Unsupported p_payload_type: '
-                  || l_payload_type
-                  || ' (supported: json, xml, text)'
-            );
+               p_info => 'Unsupported p_payload_type: ' || l_payload_type || ' (supported: json, xml, text)' );
       END IF;
 
 
@@ -504,15 +483,14 @@ IS
                   p_info    => 'Invalid item table or payload mapper'
                );
 
-            add_Context(l_result);
+            put_Context(l_result);
             RETURN l_result;
       END;
-
 
       IF p_response_kind = RESPONSE_OK THEN
          IF p_payload_text IS NULL
             OR DBMS_LOB.getlength(p_payload_text) = 0
-            OR REGEXP_LIKE(
+            OR REGEXP_LIKE (
                   p_payload_text,
                   '^[[:space:]]*$'
                )
@@ -554,7 +532,7 @@ IS
                         p_info    => 'p_payload_text is not valid XML'
                      );
 
-                  add_Context(l_result);
+                  put_Context(l_result);
                   RETURN l_result;
             END;
          END IF;
@@ -577,8 +555,7 @@ IS
          END IF;
       END IF;
 
-
-      g_log.enter_f(
+      g_log.enter_f (
          p_function_name => 'apply_Item_Result',
          p_message_text  =>
                'table='
@@ -592,12 +569,10 @@ IS
 
       DCL.SavePoint(l_savepoint_name);
 
-
-      ------------------------------------------------------------------------
-      -- Request lock is always first: it serializes all item results for one
-      -- request and makes the final SENT -> DONE test race-free.
-      ------------------------------------------------------------------------
+      -- Блокировка запроса всегда выполняется первой: она сериализует все результаты элементов для 
+      -- одного запроса и предотвращает гонку данных при выполнении финального теста SENT -> DONE.
       BEGIN
+         
          SELECT REQ_ID,
                 INF_ID,
                 STATUS_CD,
@@ -620,12 +595,9 @@ IS
             RETURN
                failure_Result(
                   p_code => 'ITEM_RESULT_REQUEST_NOT_FOUND',
-                  p_info =>
-                     'Request not found: request_uuid='
-                     || TRIM(p_request_uuid)
+                  p_info => 'Request not found: request_uuid=' || TRIM(p_request_uuid)
                );
       END;
-
 
       l_log.context(
          p_inf_id         => l_inf_id,
@@ -633,11 +605,7 @@ IS
          p_correlation_id => l_correlation_id
       );
 
-
-      IF l_status_cd NOT IN (
-            MI_Request_Api.STATUS_SENT,
-            MI_Request_Api.STATUS_DONE
-         )
+      IF l_status_cd NOT IN ( MI_Request_Api.STATUS_SENT, MI_Request_Api.STATUS_DONE )
       THEN
          MI_Transaction.rollback_And_Warn(
             p_name => l_savepoint_name,
@@ -647,9 +615,7 @@ IS
          RETURN
             failure_Result(
                p_code      => 'ITEM_RESULT_REQUEST_BAD_STATUS',
-               p_info      =>
-                  'Request status must be SENT or DONE, actual='
-                  || MI_Request_Api.status_Name(l_status_cd),
+               p_info      => 'Request status must be SENT or DONE, actual=' || MI_Request_Api.status_Name(l_status_cd),
                p_req_id    => l_req_id,
                p_inf_id    => l_inf_id,
                p_status_cd => l_status_cd
@@ -657,10 +623,7 @@ IS
       END IF;
 
 
-      ------------------------------------------------------------------------
-      -- The item is resolved only inside its request. This is the integrity
-      -- check for the polymorphic ITM_ID/table relation.
-      ------------------------------------------------------------------------
+      -- Запрос и бокиорвка для элемента, с последующей блокировкой
       l_sql :=
             'SELECT ITM_ID, MESSAGE_UUID '
          || '  FROM '
@@ -670,6 +633,7 @@ IS
          || '   FOR UPDATE';
 
       BEGIN
+         
          EXECUTE IMMEDIATE l_sql
             INTO l_itm_id,
                  l_current_message
@@ -686,19 +650,12 @@ IS
             RETURN
                failure_Result(
                   p_code      => 'ITEM_RESULT_ITEM_NOT_FOUND',
-                  p_info      =>
-                        'Item not found: table='
-                     || l_item_table
-                     || ', request_uuid='
-                     || TRIM(p_request_uuid)
-                     || ', item_uuid='
-                     || TRIM(p_item_uuid),
+                  p_info      => 'Item not found: table=' || l_item_table || ', request_uuid=' || TRIM(p_request_uuid) || ', item_uuid=' || TRIM(p_item_uuid),
                   p_req_id    => l_req_id,
                   p_inf_id    => l_inf_id,
                   p_status_cd => l_status_cd
                );
       END;
-
 
       l_log.context(
          p_inf_id         => l_inf_id,
@@ -708,11 +665,10 @@ IS
       );
 
 
-      ------------------------------------------------------------------------
-      -- Existing outcome: idempotent replay or conflicting message.
-      ------------------------------------------------------------------------
+      -- Полученный рельтат
       IF l_current_message IS NOT NULL THEN
-         try_Complete_Request;
+         
+         try_Complete_Request();
 
          IF TRIM(l_current_message) = TRIM(p_message_uuid) THEN
             l_log.info(
@@ -734,17 +690,10 @@ IS
                );
          END IF;
 
-
          l_log.warn(
             p_message_text => 'Item result conflicts with another message',
             p_action_code  => 'message_conflict',
-            p_details_text =>
-               TO_CLOB(
-                     'current_message_uuid='
-                  || TRIM(l_current_message)
-                  || ', new_message_uuid='
-                  || TRIM(p_message_uuid)
-               )
+            p_details_text => TO_CLOB( 'current_message_uuid=' | TRIM(l_current_message) || ', new_message_uuid=' || TRIM(p_message_uuid) )
          );
 
          RETURN
@@ -756,18 +705,13 @@ IS
                p_inf_id    => l_inf_id,
                p_itm_id    => l_itm_id,
                p_status_cd => l_status_cd,
-               p_details   =>
-                  TO_CLOB(
-                        'current_message_uuid='
-                     || TRIM(l_current_message)
-                     || ', new_message_uuid='
-                     || TRIM(p_message_uuid)
-                  )
+               p_details   => TO_CLOB( 'current_message_uuid=' || TRIM(l_current_message) || ', new_message_uuid=' || TRIM(p_message_uuid)  )
             );
+            
       END IF;
 
-
       IF l_status_cd = MI_Request_Api.STATUS_DONE THEN
+         
          MI_Transaction.rollback_And_Warn(
             p_name => l_savepoint_name,
             p_log  => l_log
@@ -784,11 +728,9 @@ IS
             );
       END IF;
 
-
-      ------------------------------------------------------------------------
-      -- Business mapping is part of the same atomic operation.
-      ------------------------------------------------------------------------
+      -- Business mapping  - также в той же транзакции
       IF p_response_kind = RESPONSE_OK THEN
+
          l_sql :=
                'BEGIN '
             || l_payload_mapper
@@ -807,7 +749,6 @@ IS
                      IN  l_payload_type,
                      OUT l_ires_code,
                      OUT l_cres_info;
-
          EXCEPTION
             WHEN OTHERS THEN
                l_sqlcode := SQLCODE;
@@ -832,7 +773,8 @@ IS
                      p_info    => 'Successful payload business mapping failed'
                   );
 
-               add_Context(l_result);
+               put_Context(l_result);
+               
                RETURN l_result;
          END;
 
@@ -874,9 +816,7 @@ IS
       END IF;
 
 
-      ------------------------------------------------------------------------
-      -- Core alone owns common outcome fields.
-      ------------------------------------------------------------------------
+      -- Только ядерный механизм знает значения общих полей, их и set
       l_sql :=
             'UPDATE '
          || l_item_table
@@ -907,9 +847,7 @@ IS
          RETURN
             failure_Result(
                p_code      => 'ITEM_RESULT_UPDATE_FAILED',
-               p_info      =>
-                  'Item outcome was not applied, row_count='
-                  || l_row_count,
+               p_info      => 'Item outcome was not applied, row_count=' || l_row_count,
                p_req_id    => l_req_id,
                p_inf_id    => l_inf_id,
                p_itm_id    => l_itm_id,
@@ -917,27 +855,21 @@ IS
             );
       END IF;
 
-
-      try_Complete_Request;
+      -- пробуем закрыть запрос, 
+      -- если в нем нет не обрабоатанных элементов
+      try_Complete_Request();
 
 
       l_log.info(
          p_message_text => 'Item result applied',
          p_action_code  => 'apply_result',
-         p_details_text =>
-            TO_CLOB(
-                  'ires_code='
-               || l_ires_code
-               || ', request_completed='
-               || MI_Utils.to_Char(l_request_completed)
-            )
+         p_details_text => TO_CLOB( 'ires_code=' || l_ires_code || ', request_completed=' || MI_Utils.to_Char(l_request_completed) )
       );
 
       l_log.exit_f(
          p_function_name => 'apply_Item_Result',
          p_message_text  => 'Item result applied'
       );
-
 
       RETURN
          success_Result(
@@ -951,7 +883,6 @@ IS
             p_idempotent         => FALSE,
             p_request_completed  => l_request_completed
          );
-
 
    EXCEPTION
       WHEN OTHERS THEN
@@ -977,8 +908,10 @@ IS
                p_info    => 'Не удалось применить результат item'
             );
 
-         add_Context(l_result);
+         put_Context(l_result);
+         
          RETURN l_result;
+         
    END apply_Item_Result;
 
 END MI_Item_Result_Api;

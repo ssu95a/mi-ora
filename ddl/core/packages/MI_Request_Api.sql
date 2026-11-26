@@ -1,8 +1,7 @@
 CREATE OR REPLACE PACKAGE MI_Request_Api
 IS
 
-   VERSION CONSTANT VARCHAR2(100) :=
-      '$Id: {1.2.1} {19.11.2026} Sulimoff$';
+   VERSION CONSTANT VARCHAR2(100) :=  '$Id: {1.2.3} {26.11.2026} Sulimoff$';
 
 
    SUBTYPE Status_t IS PLS_INTEGER RANGE -1 .. 3;
@@ -18,17 +17,19 @@ IS
    RET_FAIL CONSTANT PLS_INTEGER := -1;
    RET_OK   CONSTANT PLS_INTEGER :=  0;
 
-
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2;
 
 
+   /* */
    FUNCTION status_Name (
       p_status_cd IN Status_t
    )
       RETURN VARCHAR2;
 
 
+   /* */
    FUNCTION exists_Inf (
       p_inf_id IN MI_INF.INF_ID%TYPE
    )
@@ -41,24 +42,27 @@ IS
       RETURN BOOLEAN;
 
 
+   /* */
    FUNCTION resolve_Wsp_Id (
       p_inf_id IN MI_INF.INF_ID%TYPE
    )
       RETURN MI_WSP.WSP_ID%TYPE;
 
 
+   /* */
    FUNCTION resolve_Inf_Id (
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
       RETURN MI_REQ.INF_ID%TYPE;
 
 
+   /* */
    FUNCTION get_Status (
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
       RETURN Status_t;
 
-
+   /* */
    FUNCTION get_Correlation_Id (
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
@@ -207,25 +211,16 @@ IS
 
 END MI_Request_Api;
 /
-
 CREATE OR REPLACE PACKAGE BODY MI_Request_Api
 IS
 
    cLogger CONSTANT VARCHAR2(64) := 'mi.request';
 
-   /*
-      Package-level constant хранит стабильную идентичность пакета.
-      Простые вызовы без operation context идут напрямую через g_log.
-      Локальная value-copy нужна только когда требуется context().
-   */
-   g_log CONSTANT MI_Logger_T :=
-      MI_Logger_T(
-         p_logger_name  => cLogger,
-         p_package_name => $$PLSQL_UNIT
-      );
+   /* Глобальный логгер  */
+   g_log CONSTANT MI_Logger_T := MI_Logger_T( p_logger_name  => cLogger, p_package_name => $$PLSQL_UNIT );
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Version
       RETURN VARCHAR2
    IS
@@ -234,7 +229,7 @@ IS
    END get_Version;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION status_Name (
       p_status_cd IN Status_t
    )
@@ -253,7 +248,7 @@ IS
    END status_Name;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION exists_Inf (
       p_inf_id IN MI_INF.INF_ID%TYPE
    )
@@ -274,7 +269,7 @@ IS
    END exists_Inf;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION exists_Request (
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
@@ -295,7 +290,7 @@ IS
    END exists_Request;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION resolve_Wsp_Id (
       p_inf_id IN MI_INF.INF_ID%TYPE
    )
@@ -312,7 +307,7 @@ IS
    END resolve_Wsp_Id;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION resolve_Inf_Id (
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
@@ -329,7 +324,7 @@ IS
    END resolve_Inf_Id;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Status (
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
@@ -346,7 +341,7 @@ IS
    END get_Status;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION get_Correlation_Id (
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
@@ -363,7 +358,7 @@ IS
    END get_Correlation_Id;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION success_Result (
       p_code      IN VARCHAR2,
       p_info      IN VARCHAR2,
@@ -402,7 +397,7 @@ IS
    END success_Result;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION failure_Result (
       p_code          IN VARCHAR2,
       p_info          IN VARCHAR2,
@@ -443,7 +438,7 @@ IS
    END failure_Result;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION current_State_Failure (
       p_req_id     IN MI_REQ.REQ_ID%TYPE,
       p_operation  IN VARCHAR2,
@@ -495,7 +490,7 @@ IS
    END current_State_Failure;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION create_Request (
       p_inf_id                IN MI_REQ.INF_ID%TYPE,
 
@@ -660,7 +655,7 @@ IS
    END create_Request;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION take_For_Proc (
       p_req_id IN MI_REQ.REQ_ID%TYPE,
       p_info   IN VARCHAR2 DEFAULT NULL
@@ -748,7 +743,7 @@ IS
    END take_For_Proc;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE take_For_Proc (
       p_req_id    IN  MI_REQ.REQ_ID%TYPE,
       p_info      IN  VARCHAR2,
@@ -774,7 +769,7 @@ IS
    END take_For_Proc;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION to_Sent (
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
@@ -847,7 +842,7 @@ IS
    END to_Sent;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE to_Sent (
       p_req_id    IN  MI_REQ.REQ_ID%TYPE,
       p_ret_code  OUT NUMBER,
@@ -868,7 +863,7 @@ IS
    END to_Sent;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION to_Success (
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
@@ -941,7 +936,7 @@ IS
    END to_Success;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE to_Success (
       p_req_id    IN  MI_REQ.REQ_ID%TYPE,
       p_ret_code  OUT NUMBER,
@@ -962,7 +957,7 @@ IS
    END to_Success;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION to_Error (
       p_req_id IN MI_REQ.REQ_ID%TYPE
    )
@@ -1035,7 +1030,7 @@ IS
    END to_Error;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE to_Error (
       p_req_id    IN  MI_REQ.REQ_ID%TYPE,
       p_ret_code  OUT NUMBER,
@@ -1056,7 +1051,7 @@ IS
    END to_Error;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION apply_Request_Failure_Impl (
       p_external_uuid  IN MI_REQ.EXTERNAL_UUID%TYPE,
       p_message_uuid   IN MI_REQ.MESSAGE_UUID%TYPE,
@@ -1088,7 +1083,7 @@ IS
       l_log                   MI_Logger_T := g_log;
 
 
-      ------------------------------------------------------------------------
+      /* */
       PROCEDURE rollback_For_Result
       IS
       BEGIN
@@ -1107,7 +1102,7 @@ IS
       END rollback_For_Result;
 
 
-      ------------------------------------------------------------------------
+      /* */
       PROCEDURE add_Transport_Context (
          p_value IN OUT NOCOPY MI_ResultCtx.exec_Result_t
       )
@@ -1142,11 +1137,10 @@ IS
 
 
    BEGIN
-      ------------------------------------------------------------------------
+      
       -- Validate the transport envelope before locks and DML.
-      ------------------------------------------------------------------------
-      IF p_external_uuid IS NULL
-         OR NOT MI_Utils.is_Uuid(TRIM(p_external_uuid))
+      
+      IF p_external_uuid IS NULL OR NOT MI_Utils.is_Uuid(TRIM(p_external_uuid))
       THEN
          RETURN
             failure_Result(
@@ -1156,8 +1150,7 @@ IS
             );
       END IF;
 
-      IF p_message_uuid IS NULL
-         OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
+      IF p_message_uuid IS NULL OR NOT MI_Utils.is_Uuid(TRIM(p_message_uuid))
       THEN
          RETURN
             failure_Result(
@@ -1175,9 +1168,7 @@ IS
          RETURN
             failure_Result(
                p_code     => 'REQUEST_FAILURE_INVALID_REASON',
-               p_info     =>
-                  'Unsupported p_reason_code: '
-                  || NVL(l_reason_code, '<NULL>'),
+               p_info     => 'Unsupported p_reason_code: ' || NVL(l_reason_code, '<NULL>'),
                p_ret_code => RET_FAIL
             );
       END IF;
@@ -1185,11 +1176,7 @@ IS
 
       g_log.enter_f(
          p_function_name => 'apply_Request_Failure',
-         p_message_text  =>
-               'external_uuid='
-            || TRIM(p_external_uuid)
-            || ', reason_code='
-            || l_reason_code
+         p_message_text  => 'external_uuid=' || TRIM(p_external_uuid) || ', reason_code='|| l_reason_code
       );
 
 
@@ -1431,7 +1418,7 @@ IS
    END apply_Request_Failure_Impl;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    PROCEDURE apply_Request_Failure (
       p_external_uuid  IN MI_REQ.EXTERNAL_UUID%TYPE,
       p_message_uuid   IN MI_REQ.MESSAGE_UUID%TYPE,
@@ -1473,7 +1460,7 @@ IS
    END apply_Request_Failure;
 
 
-   ---------------------------------------------------------------------------
+   /* */
    FUNCTION reset (
       p_req_id IN MI_REQ.REQ_ID%TYPE,
       p_info   IN VARCHAR2 DEFAULT NULL

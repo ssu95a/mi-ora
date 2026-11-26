@@ -3,7 +3,7 @@ IS
 
    /* MI. Служба системных, workspace- и INF-свойств */
 
-   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.2} {15.11.2026} Sulimoff$';
+   VERSION CONSTANT VARCHAR2(100) := '$Id: {1.0.3} {26.11.2026} Sulimoff$';
 
 
    /* */
